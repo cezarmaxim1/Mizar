@@ -1,0 +1,5 @@
+bin/
+obj/
+*.user
+.vs/
+google-drive-api.txt
