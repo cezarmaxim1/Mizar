@@ -58,6 +58,10 @@ public class Settings
     public string? DriveFileId { get; set; }
     public long DriveLastSyncUtc { get; set; }
 
+    // Self-update from GitHub Releases (see Updater.cs)
+    public bool AutoUpdate { get; set; } = true;
+    public long UpdateLastCheckUtc { get; set; }
+
     static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };
 
     public static Settings Load()

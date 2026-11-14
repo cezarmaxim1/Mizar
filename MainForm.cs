@@ -3,7 +3,7 @@ using Microsoft.Web.WebView2.Core;
 
 namespace Mizar;
 
-public class MainForm : Form
+public partial class MainForm : Form
 {
     readonly Settings settings = Settings.Load();
     readonly BookmarkStore bookmarks = BookmarkStore.Load();
@@ -168,6 +168,7 @@ public class MainForm : Form
             if (!File.Exists(OperaFavicons.Marker)) await ImportOperaFavicons();
             if (firstRun) _ = PrefetchFavicons();
             if (DriveSync.IsConnected(settings)) _ = SyncBookmarksAsync(silent: true);
+            _ = AutoCheckForUpdates();
         };
         // self-tests must never touch the owner's settings, history or session
         FormClosing += (_, _) =>
@@ -181,6 +182,8 @@ public class MainForm : Form
 
         Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
         FormClosed += (_, _) => Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+        Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        FormClosed += (_, _) => Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
     }
 
     // ---------- Theme (follows Windows light/dark) ----------
@@ -305,6 +308,10 @@ public class MainForm : Form
             if (t == active || cw == null || cw.IsSuspended) continue;
             if (DateTime.Now - t.LastActive < SleepAfter) continue;
             if (cw.IsDocumentPlayingAudio) continue;
+            // never freeze a page in the middle of a request (see NetRepair.cs): start watching
+            // the tab's requests if we weren't yet, and wait while any of them is still loading
+            if (!t.NetWatch) { await SetNetWatch(t, true); continue; }
+            if (t.InFlight.Count > 0) continue;
             try { await cw.TrySuspendAsync(); } catch { }
         }
     }
@@ -499,6 +506,7 @@ public class MainForm : Form
         menu.Items.Add(Item("Printează", "Ctrl+P", () => active?.Core?.ShowPrintUI()));
         menu.Items.Add(Item("Ecran complet", "F11", () => SetFullscreen(!fullscreen)));
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(Item("Repară conexiunea", "", () => _ = RepairConnection()));
         menu.Items.Add(Item("Setări", "", OpenSettings));
         menu.Items.Add(Item("Ieșire", "", Close));
         menu.Opening += (_, _) => miShowBar.Checked = settings.ShowBookmarksBar;
@@ -531,6 +539,8 @@ public class MainForm : Form
     /// <summary>A second Mizar launch (e.g. a link clicked in another app) lands here.</summary>
     public void OpenFromOtherInstance(string url)
     {
+        // maintenance commands from "Mizar.exe --netdiag/--fixnet": no window activation, no tab
+        if (url.StartsWith("mizar-cmd:")) { _ = RunCommand(url["mizar-cmd:".Length..]); return; }
         if (Native.IsIconic(Handle)) Native.ShowWindow(Handle, 9); // SW_RESTORE
         Activate();
         Native.SetForegroundWindow(Handle);
@@ -810,6 +820,7 @@ public class MainForm : Form
             catch (Exception ex) { ErrorLog.Write("WebMessage", ex); }
         };
         cw.HistoryChanged += (_, _) => { if (tab == active) UpdateNav(); };
+        WireNetWatch(tab, cw);
         cw.FaviconChanged += async (_, _) => await LoadFavicon(tab, cw);
         cw.NewWindowRequested += (_, e) =>
         {
@@ -916,12 +927,48 @@ public class MainForm : Form
     /// <summary>Diagnostics: mizar.exe --selftest &lt;url&gt; &lt;outfile&gt; loads a page, dumps results, exits.</summary>
     async Task RunSelfTest(CoreWebView2 cw, string outFile)
     {
+        // --netlog: record failed requests (host + type + reason only, never paths or page content)
+        var netFails = new List<string>();
+        if (startArgs.Contains("--netlog"))
+        {
+            var types = new Dictionary<string, string>();
+            var hosts = new Dictionary<string, string>();
+            cw.GetDevToolsProtocolEventReceiver("Network.requestWillBeSent").DevToolsProtocolEventReceived += (_, e) =>
+            {
+                using var d = System.Text.Json.JsonDocument.Parse(e.ParameterObjectAsJson);
+                var id = d.RootElement.GetProperty("requestId").GetString() ?? "";
+                var url = d.RootElement.GetProperty("request").GetProperty("url").GetString() ?? "";
+                hosts[id] = Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host : url[..Math.Min(30, url.Length)];
+                types[id] = d.RootElement.TryGetProperty("type", out var t) ? t.GetString() ?? "" : "";
+            };
+            cw.GetDevToolsProtocolEventReceiver("Network.loadingFailed").DevToolsProtocolEventReceived += (_, e) =>
+            {
+                using var d = System.Text.Json.JsonDocument.Parse(e.ParameterObjectAsJson);
+                var r = d.RootElement;
+                var id = r.GetProperty("requestId").GetString() ?? "";
+                string reason = r.TryGetProperty("blockedReason", out var b) ? "blocked:" + b.GetString()
+                              : r.TryGetProperty("corsErrorStatus", out var c) ? "cors:" + c.GetProperty("corsError").GetString()
+                              : r.TryGetProperty("errorText", out var et) ? et.GetString() ?? "" : "";
+                lock (netFails) netFails.Add($"{(hosts.TryGetValue(id, out var h) ? h : "?")} [{(types.TryGetValue(id, out var ty) ? ty : r.TryGetProperty("type", out var t2) ? t2.GetString() : "")}] {reason}");
+            };
+            await cw.CallDevToolsProtocolMethodAsync("Network.enable", "{}");
+            cw.Reload();
+        }
         var done = new TaskCompletionSource();
         void Handler(object? s, CoreWebView2NavigationCompletedEventArgs e) => done.TrySetResult();
         cw.NavigationCompleted += Handler;
         await Task.WhenAny(done.Task, Task.Delay(30000));
         await Task.Delay(8000);
         string keys = "";
+        if (startArgs.Contains("--flushtest"))
+        {
+            var sw = Stopwatch.StartNew();
+            var r = await FlushSockets();
+            keys += $"flush: {r} in {sw.ElapsedMilliseconds} ms\n";
+            cw.Reload();
+            await Task.Delay(6000);
+            keys += $"after flush reload: source={Bookmark.HostOf(cw.Source)} loading={active?.IsLoading}\n";
+        }
         if (startArgs.Contains("--zoom") && active != null)
         {
             // simulate the user zooming to 125%, then leave the site and come back
@@ -955,6 +1002,67 @@ public class MainForm : Form
                 using var shot = File.Create(outFile + ".newtab.png");
                 await t.Core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, shot);
             }
+        }
+        if (startArgs.Contains("--updatetest"))
+        {
+            // MIZAR_UPDATE_URL points at a local fake of the GitHub API; the swap happens after exit (Program)
+            try
+            {
+                var r = await Updater.CheckAndStage();
+                keys += $"update: current={Updater.CurrentText} canUpdate={Updater.CanUpdate} ready={r.Ready} version={r.Version} staged={Updater.StagedVersion} msg={r.Message}\n";
+            }
+            catch (Exception ex) { keys += "update: ERROR " + ex.Message + "\n"; }
+        }
+        if (startArgs.Contains("--sleepguard") && active != null)
+        {
+            // a background tab with a request in flight must not be put to sleep; once it finishes, it may
+            var first = active;
+            var core = first.Core!;
+            await NewTabFocused();               // first tab goes to the background (NetWatch on)
+            await Task.Delay(1500);
+            first.LastActive = DateTime.Now - SleepAfter - TimeSpan.FromMinutes(1);
+            // slow request (server answers after ~12 s), started from the background tab
+            await core.ExecuteScriptAsync("const t0=performance.now(); fetch('https://postman-echo.com/delay/10?x=' + Date.now(), {cache:'no-store'}).then(r => r.status).then(s => document.title = 'done ' + s + ' ' + Math.round(performance.now()-t0) + 'ms').catch(e => document.title = 'fail ' + e)");
+            await Task.Delay(2000);
+            int inflight = first.InFlight.Count;
+            await SleepInactiveTabs();
+            bool sleptWhileBusy = core.IsSuspended;
+            await Task.Delay(14000);             // the request finishes
+            int after = first.InFlight.Count;
+            await SleepInactiveTabs();
+            bool sleptWhenIdle = core.IsSuspended;
+            keys += $"sleepguard: watch={first.NetWatch} inflight={inflight} sleptWhileBusy={sleptWhileBusy} | after: inflight={after} sleptWhenIdle={sleptWhenIdle} title='{first.Title}'\n";
+            Activate(first);
+        }
+        if (startArgs.Contains("--sleeptest"))
+        {
+            // background the tab, let Mizar put it to sleep, bring it back: images and network must still work
+            async Task<string> Eval(CoreWebView2 c, string js)
+            {
+                try { return System.Text.Json.JsonSerializer.Deserialize<string>(await c.ExecuteScriptAsync(js)) ?? ""; }
+                catch (Exception ex) { return "ERR " + ex.Message; }
+            }
+            // ExecuteScriptAsync does not await promises, so the probe is synchronous (sync XHR for the network check)
+            const string probe = "(() => { const imgs=[...document.images]; const broken=imgs.filter(i=>i.complete && i.naturalWidth===0).length; " +
+                                 "const pending=imgs.filter(i=>!i.complete).length; let net='?'; " +
+                                 "try { const x=new XMLHttpRequest(); x.open('GET', location.origin + '/favicon.ico?t=' + Date.now(), false); x.send(); net=x.status; } catch(e) { net='ERR ' + e.message; } " +
+                                 "return 'images=' + imgs.length + ' broken=' + broken + ' pending=' + pending + ' net=' + net + ' visible=' + document.visibilityState; })()";
+            var first = tabs[0];
+            string before = await Eval(cw, probe);
+            await CreateTab("https://example.com/");               // first tab goes to the background (Low memory)
+            await Task.Delay(3000);
+            bool suspended = false;
+            try { suspended = await cw.TrySuspendAsync(); } catch { }
+            await Task.Delay(int.TryParse(Environment.GetEnvironmentVariable("MIZAR_SLEEP_SECONDS"), out var ss) ? ss * 1000 : 15000);
+            Activate(first);
+            await Task.Delay(1500);
+            string after1 = await Eval(cw, probe);
+            await Task.Delay(5000);
+            string after6 = await Eval(cw, probe);
+            keys += $"sleeptest: suspended={suspended}\n  before:   {before}\n  after 1s: {after1}\n  after 6s: {after6}\n";
+            if (!startArgs.Contains("--noshot"))
+                using (var shot = File.Create(outFile + ".after.png"))
+                    await Task.WhenAny(cw.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, shot), Task.Delay(5000));
         }
         if (startArgs.Contains("--histback"))
         {
@@ -1030,9 +1138,17 @@ public class MainForm : Form
         try { text = System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync("document.body ? document.body.innerText.slice(0, 4000) : ''")) ?? ""; }
         catch (Exception ex) { text = "script failed: " + ex.Message; }
         text = keys + text;
+        if (startArgs.Contains("--netlog"))
+        {
+            List<string> fails; lock (netFails) fails = netFails.ToList();
+            var summary = fails.GroupBy(x => x).OrderByDescending(g => g.Count()).Select(g => $"  {g.Count()}x {g.Key}");
+            text = $"netlog: {fails.Count} failed requests\n{string.Join("\n", summary)}\n" +
+                   (startArgs.Contains("--notext") ? "" : text);
+        }
         File.WriteAllText(outFile,
             $"url={cw.Source}\nscheme={cw.Profile.PreferredColorScheme}\nblock3pc={settings.BlockThirdPartyCookies}\nblockedAds={AdBlocker.BlockedAds}\nblockedTrackers={AdBlocker.BlockedTrackers}\n---\n{text}");
-        try
+        // --noshot: private pages (e.g. the owner's mail) are never captured
+        if (!startArgs.Contains("--noshot")) try
         {
             // a hidden tab never renders a frame, so its capture can wait forever: give up after 5 s
             using var shot = File.Create(outFile + ".page.png");
@@ -1112,11 +1228,13 @@ public class MainForm : Form
             _ = InitTab(tab, pending);
         }
         if (tab.Core != null) tab.Core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal;
+        _ = SetNetWatch(tab, false);
         if (prev != null && !prev.View.IsDisposed)
         {
             prev.View.Visible = false;
             prev.LastActive = DateTime.Now;
             if (prev.Core != null) prev.Core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
+            _ = SetNetWatch(prev, true);
         }
         SyncStrip();
         UpdateAddress();
@@ -1515,7 +1633,8 @@ public class MainForm : Form
     void OpenSettings()
     {
         using var f = new SettingsForm(settings, ClearData, ImportOpera, OpenBookmarkManager, MakeDefaultBrowser,
-            ConnectDriveAsync, () => SyncBookmarksAsync(silent: false), () => DriveSync.Disconnect(settings), url => _ = CreateTab(url));
+            ConnectDriveAsync, () => SyncBookmarksAsync(silent: false), () => DriveSync.Disconnect(settings), url => _ = CreateTab(url),
+            () => CheckForUpdates(manual: true));
         if (f.ShowDialog(this) != DialogResult.OK) return;
         foreach (var t in tabs)
             if (t.Core != null) ApplySettings(t.Core);

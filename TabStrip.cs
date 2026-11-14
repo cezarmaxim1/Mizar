@@ -13,6 +13,11 @@ public class BrowserTab
     bool ownsFavicon;
     public bool IsLoading { get; set; } = true;
     public DateTime LastActive { get; set; } = DateTime.Now;
+    /// <summary>Requests still loading (tracked only while the tab is in the background, see NetRepair.cs).</summary>
+    public HashSet<string> InFlight { get; } = new();
+    public bool NetWatch { get; set; }
+    /// <summary>CDP event receivers must stay referenced, or their events stop after a GC.</summary>
+    public List<object> Receivers { get; } = new();
     /// <summary>"history" while the tab shows a built-in Mizar page; null for normal web pages.</summary>
     public string? Internal => Url.StartsWith(InternalPages.History, StringComparison.OrdinalIgnoreCase) ? "history" : null;
     /// <summary>

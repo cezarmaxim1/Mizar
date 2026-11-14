@@ -29,7 +29,7 @@ dotnet publish -c Release -r win-x64 --self-contained false -o "$LOCALAPPDATA/Pr
 
 - **Before publishing,** close Mizar: `Stop-Process -Name Mizar`.
 - **After publishing,** delete `*.xml`, `*.pdb` and `Microsoft.Web.WebView2.Wpf.dll` from the install folder. They aren't needed.
-- **Default browser:** run `Mizar.exe --register` from the **installed** copy to register Mizar with Windows (HKCU only); `--unregister` undoes it. The registration stores the exe path, so never register the `bin\` build. Windows lets only the user pick the default: Settings → "Fă din Mizar browserul implicit..." registers and opens the right Windows page.
+- **Default browser:** run `Mizar.exe --register` from the **installed** copy to register Mizar with Windows (HKCU only); `--unregister` undoes it. When run from a packaged (MSIX) app such as Claude, it must go through Explorer (see Gotchas). Re-registered and verified in the real registry on 2026-11-14. The registration stores the exe path, so never register the `bin\` build. Windows lets only the user pick the default: Settings → "Fă din Mizar browserul implicit..." registers and opens the right Windows page.
 - **Shortcuts** live in `F:\Desktop\Mizar.lnk` and in the Start Menu (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Mizar.lnk`). Both point to `%LOCALAPPDATA%\Programs\Mizar\Mizar.exe`.
 - **Icon:** run `python -I assets/make_icon.py` to build `Mizar.ico` (16 to 256 px), `assets/icon.png` and `assets/icon-preview.png` from `assets/icon-source.jpg`.
   - **The source:** a white split 4-point star plus a small gold star, supplied by the owner. It's a JPG with a fake checkerboard "transparency" baked in: 40 px squares, grey 56/105.
@@ -50,7 +50,20 @@ dotnet publish -c Release -r win-x64 --self-contained false -o "$LOCALAPPDATA/Pr
 | `History.cs` | `HistoryStore`: visits saved to `history.json` (max 5000, flushed every 10 s and on exit), plus the HTML of the history page. |
 | `AppServices.cs` | `InternalPages` (built-in pages on `https://mizar.internal/`), `ErrorLog`, `SingleInstance` (mutex + named pipe), `DefaultBrowser` (Windows registration). |
 | `Suggest.cs` | `SuggestBox`: address-bar drop-down with matching bookmarks and history. |
-| `Program.cs` | Startup: error handling, `--register`/`--unregister`, single-instance hand-off. |
+| `Program.cs` | Startup: error handling, `--register`/`--unregister`, `--fixnet`/`--netdiag` (sent to the running window), single-instance hand-off. |
+| `Updater.cs` | Self-update from GitHub Releases: monthly check, Settings "Verifică acum", ECDSA signature check, swap on exit, `--release-genkey`/`--release-sign` tools. |
+| `release.ps1` | Publishes a release: bumps `<Version>`, builds, zips, signs, commits, tags, pushes, `gh release create`. |
+| `NetRepair.cs` | `FlushSockets` (closes the engine's connections through a hidden `edge://net-internals/#sockets` page), menu "Repară conexiunea", flush after the laptop wakes, `--netdiag` report. |
+
+## Updates (GitHub Releases)
+
+- **Repo:** `github.com/cezarmaxim1/Mizar` (public, so no token is needed to read releases).
+- **When Mizar checks:** at most once every 30 days, one minute after start (`AutoUpdate`, `UpdateLastCheckUtc` in settings), or on demand from Settings → Actualizări → "Verifică acum". One request to `api.github.com`; nothing runs in the background between checks.
+- **What a release holds:** `Mizar-win-x64.zip` (the publish folder without xml/pdb/Wpf dll) and `Mizar-win-x64.zip.sig`: an ECDSA P-256 signature of `"<version>\n<sha256 hex of zip>"`. The version is part of the signed data, so an old zip can't be re-tagged as new.
+- **Signing key:** `%USERPROFILE%\.mizar-release\signing-key.pem` (private; folder ACL limited to the owner) plus `.pub`. The public key is built into `Updater.PublicKey`. **Never commit the key** (`*.pem` is gitignored). If it's lost, installed copies can't accept new releases until Mizar is reinstalled by hand with a new key, so the owner should keep a backup.
+- **Applying:** a verified update is unpacked to `%LOCALAPPDATA%\Mizar\update\staged`. When Mizar closes, `Program` swaps it in: each running file is renamed to `*.old` (Windows allows that), the new one is copied, and everything is rolled back on error. If the user chose "Repornesc acum", Mizar relaunches. `CleanupOld` deletes the `*.old` files at the next start. Development builds (`\bin\`) never update.
+- **Publishing:** commit first, then `powershell -ExecutionPolicy Bypass -File release.ps1 -Version 1.0.1`. Needs `gh` logged in.
+- **Test:** `MIZAR_UPDATE_URL` points the check at a fake of the GitHub API (a local `http.server` with a `latest.json`). `--selftest <url> <out> --updatetest` checks and stages; the swap runs when the test exits. Verified on 2026-11-14 on a copy in %TEMP%: a tampered zip was rejected, and the signed 9.9.9 was installed over 1.0.0. It then started, removed its `*.old` files and reported "Ai ultima versiune".
 
 ## Built-in pages
 
@@ -92,6 +105,8 @@ Everything lives in `%LOCALAPPDATA%\Mizar\`:
 - **One shared `CoreWebView2Environment`.** All tabs share a single browser process.
 - **Hidden tabs** get `MemoryUsageTargetLevel.Low`.
 - **Sleeping tabs:** tabs left in the background longer than `SleepAfter` (5 minutes) are put to sleep with `TrySuspendAsync`, unless they are playing audio. They resume automatically when shown.
+  - **Never mid-request.** Background tabs turn on CDP `Network` events (`SetNetWatch`, off again when shown) and keep `InFlight` request ids; a tab with any request in flight isn't suspended. Reason: all tabs share one HTTP/2 connection per server group, and a frozen tab that stops reading a response may stall it for everyone (suspected cause of the Gmail stalls, see open issue 0; the owner's running-tracker tab syncs with Google Sheets in the background). Verified with `--selftest https://example.com/ <out> --sleepguard`: busy → not suspended, idle → suspended.
+  - The CDP event receivers are kept in `BrowserTab.Receivers`; unreferenced ones stopped delivering events.
 - **Ad and tracker blocking** use per-domain `AddWebResourceRequestedFilter` patterns (`AdBlocker.FilterPatterns()`), so only matching requests cross into .NET. Never add a catch-all `*` filter.
   - Each domain gets one pattern, `*://*domain/*`, which also lets look-alikes through; `Classify` rejects those by exact host.
   - About 150 ad domains and 60 tracker domains. YouTube ads can't be blocked by domain, because they come from the same servers as the videos.
@@ -121,7 +136,11 @@ Everything lives in `%LOCALAPPDATA%\Mizar\`:
     - `--histback`: history page → link → Back shows the list again, and delete works.
     - `--crash`: after 3 `Page.crash` the tab lands on `/crashed`.
     - `--suggest`: typing "wiki" shows matches, prefix matches first. It also saves `<outfile>.suggest.png` and times the search: about 1 ms per keystroke with 5000 history entries.
-    - `--newtab`: opens a tab the way Ctrl+T does, waits 15 s, then reports and captures it.
+    - `--newtab`: opens a tab the way Ctrl+T does, waits 15 s, then reports and captures it. A new tab is `about:blank` on purpose (owner's choice).
+    - `--netlog`: reloads the page with CDP `Network` events on and lists failed requests as host + resource type + reason only, never paths or page content. Add `--notext` to skip the page text.
+    - `--sleeptest`: puts the tab in the background, suspends it with `TrySuspendAsync`, waits (`MIZAR_SLEEP_SECONDS`, default 15), brings it back, and counts broken or pending images and does a same-origin sync XHR. Verified on 2026-11-14 on a public Google page and on the owner's Gmail (60 s): nothing broken after waking.
+    - **`--noshot`:** skips every screenshot. **Mandatory** whenever a test touches the owner's real profile (mail, accounts), so private content is never captured.
+  - **To test against the owner's real, logged-in profile,** launch the self-test through Explorer (see the MSIX gotcha), write the output under `F:\` (not AppData), and use `--notext --noshot`. Delete the output afterwards.
   - **Captures of hidden tabs never finish** (no frame is rendered), so every capture in the self-test has a 5 s timeout. Without it the test instance never closed.
   - **Window screenshots from outside:** call `SetProcessDPIAware` first, then `PrintWindow(h, hdc, 2)`. Without DPI awareness the capture is cropped.
 
@@ -165,10 +184,22 @@ Baseline measured on 2026-11-13, with one Google tab: about 400 MB of WebView2 p
 
 ## Known open issues (2026-11-14)
 
+0. **Gmail stuck: no icons, endless loading, "Not connected".** Reproduced live on 2026-11-14 (instance only 15 minutes old, no sleep involved). DevTools showed every request to Google `Pending` with 0 bytes, while the same server answered 200 from PowerShell. The engine's network process had a **single** connection to Google (HTTP/2 over IPv6, which all Google hosts share), opened when Gmail loaded, that had silently stopped carrying data; new requests kept queueing on it. Waking the sleeping tabs didn't help, and neither did F5.
+   - **Fix:** `FlushSockets()` closes all the engine's connections (the "Flush socket pools" button of `edge://net-internals/#sockets`, clicked in a hidden WebView). It runs from the menu "Repară conexiunea" (then reloads the page), after the laptop wakes up, and from `Mizar.exe --fixnet`. Verified with `--selftest ... --flushtest`: "ok" in about 250 ms.
+   - **Suspected trigger (unproven):** a background tab frozen by `TrySuspendAsync` mid-response. The other tab open at the time was the owner's running-tracker (Netlify), which syncs through Google Sheets / Apps Script, so it shares the Google connection. Since then tabs aren't suspended while a request is in flight (see "Sleeping tabs").
+   - **If it recurs:** run `Mizar.exe --netdiag F:
+etdiag.txt` **through Explorer** while it's stuck. The running window reloads the active tab, waits 15 s, lists pending/failed requests (host + type only), flushes, and does it again, so the report shows whether the flush fixed it. Next step if flushing works: detect the stall automatically. If it doesn't: try `--disable-quic` or forcing IPv4.
+
 1. **Hand-off to the running window failed once.** In a test that started from a restored session (copy of the owner's data), a second launch with a URL exited normally, but no new tab appeared in the session and the window ended up minimized. An earlier hand-off test without a restored session worked. Investigate `OpenFromOtherInstance` and the pipe listener; `errors.log` stayed empty.
 2. **`SaveWindow` while minimized saves `Maximized = false`,** so the next start isn't maximized. Fix: skip the window part of the save when `WindowState == Minimized`, or keep the last known state.
 
 ## Gotchas
+
+- **The Claude desktop app is an MSIX package, and Windows redirects what its child processes write to AppData and HKCU.** This affects Claude only, but explains old data you may find. Anything launched straight from Claude's shell is redirected: PowerShell, `Start-Process Mizar.exe`, `Mizar.exe --register`.
+  - **Where writes go:** new files and folders land in `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\...`, not in the real `%LOCALAPPDATA%`. Registry writes also land in a private hive.
+  - **What Claude's shell sees:** a merged view, where the redirected copy hides the real file. Found on 2026-11-14: Mizar instances started by Claude used a **separate** data folder (`...\LocalCache\Local\Mizar`), while the owner's instance, started from Explorer, used the real `%LOCALAPPDATA%\Mizar`.
+  - **The owner's real data is always the real `%LOCALAPPDATA%\Mizar`.** If you are not running inside a packaged app, you read and write it directly.
+  - **Leftover:** the redirected copy (`...\Packages\Claude_...\LocalCache\Local\Mizar`) holds data from sessions Claude started. It is separate from the owner's real profile.
 
 - **WebView2 swallows some shortcuts** (Ctrl+H, for example) when the page has focus, so `ProcessCmdKey` never sees them. `ShortcutScript` is injected into every page: it catches Ctrl+H/T/W/D/L/J, Ctrl+Shift+T/B/O, Ctrl+Tab and Ctrl+1..9, and sends `{mizarKey}` to `RunShortcut`. To test this, use `--selftest <url> <out> --keys`, which presses Ctrl+H through CDP `Input.dispatchKeyEvent`. **Never** use SendKeys from outside the app: the keys can land in another window.
 - **Title-bar hit testing goes through three levels.** `TabStrip` returns `HTTRANSPARENT` for empty areas. Then the root `HitTestPanel` must **also** return `HTTRANSPARENT` (`PassThrough`); otherwise the form never sees the point, and dragging and top-edge resizing stop working. Finally the form returns `HTCAPTION`/`HTTOP`. As a fallback, `TabStrip.EmptyAreaPressed` sends `WM_NCLBUTTONDOWN` itself. Verified by sending `WM_NCHITTEST` to a test instance: empty strip gives 2, top edge 12, tab 1.

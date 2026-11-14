@@ -75,6 +75,7 @@ public class SettingsForm : Form
     readonly CheckBox bar = new() { Text = "Afișează bara de bookmark-uri", AutoSize = true };
     readonly CheckBox restore = new() { Text = "Redeschide tab-urile de data trecută", AutoSize = true };
     readonly CheckBox clearOnExit = new() { Text = "Șterge istoricul când închid Mizar", AutoSize = true };
+    readonly CheckBox autoUpdate = new() { Text = "Caută actualizări automat, o dată pe lună", AutoSize = true };
     readonly ComboBox scheme = new() { DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, Width = 260 };
     static readonly (string key, string label)[] Schemes =
     {
@@ -82,7 +83,8 @@ public class SettingsForm : Form
     };
 
     public SettingsForm(Settings settings, Func<CoreWebView2BrowsingDataKinds, Task> clear, Action import,
-        Action manage, Action makeDefault, Func<Task> connectDrive, Func<Task> syncDrive, Action disconnectDrive, Action<string> openUrl)
+        Action manage, Action makeDefault, Func<Task> connectDrive, Func<Task> syncDrive, Action disconnectDrive, Action<string> openUrl,
+        Func<Task> checkUpdates)
     {
         s = settings;
         Text = "Setări";
@@ -117,6 +119,7 @@ public class SettingsForm : Form
         bar.Checked = s.ShowBookmarksBar;
         restore.Checked = s.RestoreSession;
         clearOnExit.Checked = s.ClearHistoryOnExit;
+        autoUpdate.Checked = s.AutoUpdate;
 
         foreach (var (_, label) in Schemes) scheme.Items.Add(label);
         scheme.SelectedIndex = Math.Max(0, Array.FindIndex(Schemes, x => x.key == s.WebColorScheme));
@@ -229,6 +232,28 @@ public class SettingsForm : Form
         col.Controls.Add(driveStatus);
         col.Controls.Add(Row(btnDriveConn, btnDriveSync, btnDriveApi));
 
+        col.Controls.Add(Ui.Header("Actualizări"));
+        var updStatus = new Label { AutoSize = true, Tag = "muted", Margin = new Padding(0, 4, 0, 2) };
+        void RefreshUpdateUi()
+        {
+            var when = s.UpdateLastCheckUtc > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(s.UpdateLastCheckUtc).ToLocalTime().ToString("dd.MM.yyyy")
+                : "niciodată";
+            updStatus.Text = $"Versiunea {Updater.CurrentText} · ultima verificare: {when}";
+        }
+        RefreshUpdateUi();
+        var btnUpd = Ui.Btn("Verifică acum");
+        btnUpd.Click += async (_, _) =>
+        {
+            btnUpd.Enabled = false;
+            updStatus.Text = "Se verifică...";
+            try { await checkUpdates(); }
+            finally { btnUpd.Enabled = true; if (!IsDisposed) RefreshUpdateUi(); }
+        };
+        col.Controls.Add(updStatus);
+        col.Controls.Add(autoUpdate);
+        col.Controls.Add(Row(btnUpd));
+
         var ok = Ui.Btn("Salvează");
         ok.DialogResult = DialogResult.OK;
         var cancel = Ui.Btn("Anulează");
@@ -260,6 +285,7 @@ public class SettingsForm : Form
             s.ShowBookmarksBar = bar.Checked;
             s.RestoreSession = restore.Checked;
             s.ClearHistoryOnExit = clearOnExit.Checked;
+            s.AutoUpdate = autoUpdate.Checked;
             s.Save();
         }
         base.OnFormClosing(e);
