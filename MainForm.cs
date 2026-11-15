@@ -978,7 +978,15 @@ public partial class MainForm : Form
     {
         var args = new List<string> { "--enable-features=HttpsUpgrades" };
         if (settings.BlockThirdPartyCookies) args.Add("--test-third-party-cookie-phaseout");
-        return new CoreWebView2EnvironmentOptions(string.Join(' ', args));
+        DiagLog.Write($"engine options: 3pcBlock={settings.BlockThirdPartyCookies} trackingPrevention=off");
+        return new CoreWebView2EnvironmentOptions(string.Join(' ', args))
+        {
+            // Edge's own tracking prevention is off: Mizar has its own blocker (AdBlocker), and Edge's
+            // classifies every cross-site request in the browser process. On 2026-11-15 Gmail's
+            // cross-site requests (gstatic.com) never reached the network stack while same-site ones
+            // did (NetLog), so anything that gates cross-site requests is a suspect. See known issue 0.
+            EnableTrackingPrevention = false
+        };
     }
 
     readonly bool thirdPartyBlockedAtStart;

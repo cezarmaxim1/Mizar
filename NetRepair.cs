@@ -171,7 +171,10 @@ public partial class MainForm
         const string js = "(() => { try { const im=[...document.images]; const res=performance.getEntriesByType('resource'); " +
             "const c=navigator.serviceWorker && navigator.serviceWorker.controller; " +
             "return 'ready=' + document.readyState + ' img=' + im.length + ' imgPending=' + im.filter(i=>!i.complete).length + " +
-            "' imgBroken=' + im.filter(i=>i.complete && i.naturalWidth===0).length + ' res=' + res.length + " +
+            "' imgBroken=' + im.filter(i=>i.complete && i.naturalWidth===0).length + " +
+            "' pendingSameSite=' + im.filter(i=>!i.complete && i.src.startsWith(location.origin)).length + " +
+            "' pendingCrossSite=' + im.filter(i=>!i.complete && /^https?:/.test(i.src) && !i.src.startsWith(location.origin)).length + " +
+            "' res=' + res.length + ' resCrossSite=' + res.filter(r=>!r.name.startsWith(location.origin)).length + " +
             "' fonts=' + (document.fonts ? document.fonts.status : '?') + ' sw=' + (c ? c.state : 'none'); } catch(e) { return 'probe error ' + e.message; } })()";
         try
         {
