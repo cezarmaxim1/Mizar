@@ -47,12 +47,12 @@ dotnet publish -c Release -r win-x64 --self-contained false -o "$LOCALAPPDATA/Pr
 | `DriveSync.cs` | Direct Google Drive REST API v3 sync for `mizar-bookmarks.json` (OAuth 2.0 + PKCE, `drive.file` scope, DPAPI-encrypted tokens, zero idle RAM). |
 | `Dialogs.cs` | `EditDialog`, `SettingsForm`, `BookmarkManagerForm` (tree with drag & drop). |
 | `History.cs` | `HistoryStore`: visits saved to `history.json` (max 5000, flushed every 10 s and on exit), plus the HTML of the history page. |
-| `AppServices.cs` | `InternalPages` (built-in pages on `https://mizar.internal/`), `ErrorLog`, `SingleInstance` (mutex + named pipe), `DefaultBrowser` (Windows registration). |
+| `AppServices.cs` | `InternalPages` (built-in pages on `https://mizar.internal/`), `ErrorLog`, `DiagLog` (`diag.log`), `SingleInstance` (mutex + named pipe), `DefaultBrowser` (Windows registration). |
 | `Suggest.cs` | `SuggestBox`: address-bar drop-down with matching bookmarks and history. |
 | `Program.cs` | Startup: error handling, `--register`/`--unregister`, `--fixnet`/`--netdiag` (sent to the running window), single-instance hand-off. |
 | `Updater.cs` | Self-update from GitHub Releases: monthly check, Settings "Verifică acum", ECDSA signature check, swap on exit, `--release-genkey`/`--release-sign` tools. |
 | `release.ps1` | Publishes a release: bumps `<Version>`, builds, zips, signs, commits, tags, pushes, `gh release create`. |
-| `NetRepair.cs` | `FlushSockets` (closes the engine's connections through a hidden `edge://net-internals/#sockets` page), menu "Repară conexiunea", flush after the laptop wakes, `--netdiag` report. |
+| `NetRepair.cs` | `RepairConnection` (menu "Repară conexiunea": socket flush + service-worker reset + reload), `FlushSockets`, `ResetServiceWorkers`, `PageProbe`, slow-load logging, flush after the laptop wakes, `--netdiag` report. |
 
 ## Updates (GitHub Releases)
 
@@ -75,6 +75,7 @@ dotnet publish -c Release -r win-x64 --self-contained false -o "$LOCALAPPDATA/Pr
 
 - **Single instance per data folder:** a second launch sends its URL through a named pipe and exits. The running window opens it in a new tab (`OpenFromOtherInstance`). Self-tests skip this on purpose.
 - **Unexpected exceptions** go to `errors.log` (rotated at 512 KB) and the window stays open. `--throw-test` injects one to prove it.
+- **`diag.log`** (`DiagLog.Write`, in the data folder, rotated at 256 KB): one line per noteworthy event, so a problem can be looked up afterwards. Hosts only, never paths, titles or page content. It records: `start v<version>`; `slow load <host>` (active tab still loading after 20 s, once per navigation, with a page probe: images pending/broken, resource count, service-worker state); `nav failed <host> <WebErrorStatus>`; `process failed <kind>`; `sleep <host>` (tab suspended); `power resume`; `repair <host>` (page probe before, flush and worker-reset results, and the probe again 10 s later); `netdiag` summaries. **Privacy note:** it does keep host names of problem pages and slept tabs even when history is wiped on close. To read the owner's copy, copy it out through Explorer (MSIX gotcha).
 - **Session:** open tabs are saved to `session.json` every 5 s (when changed) and on close.
   - At startup they come back as **lazy** tabs (`PendingUrl`): only a title and an icon, and the page starts when the tab is first shown. Verified: 3 restored tabs, 1 page process.
   - `RestoreSession` controls it and is **off by default** (owner's choice, 2026-11-14): Mizar starts with a single home-page tab. When off, `SaveSession` deletes `session.json` instead of writing it.
@@ -96,6 +97,7 @@ Everything lives in `%LOCALAPPDATA%\Mizar\`:
 | `history.json` | History |
 | `session.json` | Open tabs |
 | `errors.log` | Unexpected errors |
+| `diag.log` | Event log for diagnosing problems (hosts only) |
 | `favicons/` | Site icons: `<host>.png`, and `u_<hash>.png` per bookmark URL |
 | `WebData/` | WebView2 profile: cookies, saved passwords (encrypted by Edge/DPAPI), cache |
 
@@ -106,7 +108,7 @@ Everything lives in `%LOCALAPPDATA%\Mizar\`:
 - **Sleeping tabs:** tabs left in the background longer than `SleepAfter` (5 minutes) are put to sleep with `TrySuspendAsync`, unless they are playing audio. They resume automatically when shown.
   - **Never mid-request.** Background tabs turn on CDP `Network` events (`SetNetWatch`, off again when shown) and keep `InFlight` request ids; a tab with any request in flight isn't suspended. Reason: all tabs share one HTTP/2 connection per server group, and a frozen tab that stops reading a response may stall it for everyone (suspected cause of the Gmail stalls, see open issue 0; the owner's running-tracker tab syncs with Google Sheets in the background). Verified with `--selftest https://example.com/ <out> --sleepguard`: busy → not suspended, idle → suspended.
   - The CDP event receivers are kept in `BrowserTab.Receivers`; unreferenced ones stopped delivering events.
-- **Ad and tracker blocking** use per-domain `AddWebResourceRequestedFilter` patterns (`AdBlocker.FilterPatterns()`), so only matching requests cross into .NET. Never add a catch-all `*` filter.
+- **Ad and tracker blocking** use per-domain `AddWebResourceRequestedFilter` patterns (`AdBlocker.FilterPatterns()`), so only matching requests cross into .NET. Never add a catch-all `*` filter, and keep the source kind `Document` (not `All`): see known issue 0.
   - Each domain gets one pattern, `*://*domain/*`, which also lets look-alikes through; `Classify` rejects those by exact host.
   - About 150 ad domains and 60 tracker domains. YouTube ads can't be blocked by domain, because they come from the same servers as the videos.
 - **Restored tabs are lazy** (see Reliability). Icon fonts are cached in `Theme.DrawGlyph`, and the folder icon is created once.
@@ -183,10 +185,14 @@ Baseline measured on 2026-11-13, with one Google tab: about 400 MB of WebView2 p
 
 ## Known issues & fixes (2026-11-14 / 2026-11-15)
 
-0. **Gmail stuck: no icons, endless loading, "Not connected".** Reproduced live on 2026-11-14 (instance only 15 minutes old, no sleep involved). DevTools showed every request to Google `Pending` with 0 bytes, while the same server answered 200 from PowerShell. The engine's network process had a **single** connection to Google (HTTP/2 over IPv6, which all Google hosts share), opened when Gmail loaded, that had silently stopped carrying data; new requests kept queueing on it. Waking the sleeping tabs didn't help, and neither did F5.
-   - **Fix:** `FlushSockets()` (guarded against concurrent calls by `flushing`) closes all the engine's connections (the "Flush socket pools" button of `edge://net-internals/#sockets`, clicked in a hidden WebView). It runs from the menu "Repară conexiunea" (then reloads the page), after the laptop wakes up (`OnPowerModeChanged`), and from `Mizar.exe --fixnet`. No 15 s loading auto-flush is used, because flushing closes **all** connections (which would interrupt active downloads or slow pages). Verified with `--selftest ... --flushtest`: "ok" in about 250 ms.
-   - **Suspected trigger (unproven):** a background tab frozen by `TrySuspendAsync` mid-response. The other tab open at the time was the owner's running-tracker (Netlify), which syncs through Google Sheets / Apps Script, so it shares the Google connection. Since then tabs aren't suspended while HTTP requests are in flight (`InFlight` ignores `WebSocket`/`EventSource`/non-HTTP and expires entries after 60 s).
-   - **If it recurs:** run `Mizar.exe --netdiag F:\netdiag.txt` **through Explorer** while it's stuck. The running window reloads the active tab, waits 15 s, lists pending/failed requests (host + type only), flushes, and does it again, so the report shows whether the flush fixed it. If flushing still isn't enough, try `--disable-quic` or forcing IPv4.
+0. **Gmail stuck: no icons, no background image, endless loading, "Not connected".** Seen on 2026-11-14 and again on 2026-11-15. **Cause found on 2026-11-15: Gmail's service worker was wedged.** Every image/font/script request of the page (gstatic.com, mail.google.com) stayed `Pending`, yet the engine's NetLog (`edge://net-export`) showed that every request which reached the network finished normally, and the same URLs downloaded fine with curl over IPv4 and IPv6. The requests were stuck inside the worker, before the network.
+   - **What did NOT help:** F5, a socket flush, closing the other Google tabs, clearing the cache, a new Gmail tab. **What fixed it:** `edge://serviceworker-internals` → Unregister for `mail.google.com`, then F5.
+   - **The 2026-11-14 theory was wrong:** "one dead HTTP/2 connection to Google" fitted the symptoms, but the flush never fixed anything. `FlushSockets()` stays (menu and after wake-up) because it is harmless there.
+   - **Fix 1, `RepairConnection()`** (menu "Repară conexiunea", `Mizar.exe --fixnet`): flushes the sockets **and** resets the service workers of the active page's origin (`ResetServiceWorkers`: CDP `ServiceWorker.stopAllWorkers` + `Storage.clearDataForOrigin` with `service_workers,cache_storage`), then reloads. Cookies and logins are untouched. Verified with `--selftest http://localhost:<port>/ <out> --repairtest` on a local page with a service worker: registrations 1 → 0.
+   - **Fix 2, ad-filter scope:** the `AddWebResourceRequestedFilter` patterns use `CoreWebView2WebResourceRequestSourceKinds.Document`, not `All`. With `All`, the engine routed service-worker requests through Mizar's window too. **Unproven** that this caused the wedge; it is the one thing Mizar did to service workers that other browsers don't. Trade-off, measured on a local test page: a worker that only handles its own site's requests (the usual case) still has its page's ads blocked (2 of 2); a worker that re-fetches **everything** itself lets those ads through (1 of 2).
+   - **Other suspect (unproven):** `TrySuspendAsync` freezing a tab that shares the worker (the Google Sheets tab). Tabs aren't suspended while HTTP requests are in flight (`InFlight` ignores `WebSocket`/`EventSource`/non-HTTP and expires entries after 60 s).
+   - **No automatic repair** on slow loads (it could cut a download): owner's decision, 2026-11-15. Slow loads are only logged (see `diag.log`).
+   - **If it recurs:** read `diag.log` first. Then run `Mizar.exe --netdiag F:\netdiag.txt` **through Explorer** (a `.lnk` with arguments works; a `.cmd` did not) while it's stuck: three phases, each a reload plus 15 s of counting pending/failed requests by host + type: as is, after a socket flush, after a service-worker reset. If the worker reset fixes it again although fix 2 is in, the filter wasn't the cause: look at tab sleeping next.
 
 1. **Hand-off to the running window (fixed 2026-11-15):** URLs arriving on the pipe before `sessionReady` are queued in `pendingPipeUrls` via `EnqueueFromOtherInstance` and drained after the initial tab is created/restored. `OpenFromOtherInstance` restores minimized windows via `lastWindowState` so maximized windows stay maximized.
 2. **`SaveWindow` while minimized (fixed 2026-11-15):** `lastWindowState` tracks the last non-minimized `WindowState`, so closing while minimized preserves `settings.Maximized`.

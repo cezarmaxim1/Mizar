@@ -87,7 +87,7 @@ public partial class MainForm : Form
         };
         sleepTimer.Tick += async (_, _) => await SleepInactiveTabs();
         sleepTimer.Start();
-        zoomPoll.Tick += (_, _) => CheckZoom(active);
+        zoomPoll.Tick += (_, _) => { CheckZoom(active); LogSlowLoad(active); };
         zoomPoll.Start();
 
         BuildNav();
@@ -345,7 +345,7 @@ public partial class MainForm : Form
             foreach (var kv in t.InFlight.Where(kv => (now - kv.Value).TotalSeconds > 60).ToList())
                 t.InFlight.Remove(kv.Key);
             if (t.InFlight.Count > 0) continue;
-            try { await cw.TrySuspendAsync(); } catch { }
+            try { if (await cw.TrySuspendAsync()) DiagLog.Write("sleep " + Bookmark.HostOf(t.Url)); } catch { }
         }
     }
 
@@ -840,11 +840,15 @@ public partial class MainForm : Form
             tab.CertError = false;
             CheckZoom(tab); // record a zoom change made just before leaving the page
             tab.IsLoading = true;
+            tab.LoadStarted = DateTime.Now;
+            tab.SlowLogged = false;
             TabChanged(tab);
         };
         cw.NavigationCompleted += (_, e) =>
         {
             tab.IsLoading = false;
+            if (!e.IsSuccess && e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
+                DiagLog.Write($"nav failed {Bookmark.HostOf(cw.Source)} {e.WebErrorStatus} http={e.HttpStatusCode}");
             if (e.IsSuccess && !IsSelfTest) history.Visit(cw.Source, cw.DocumentTitle);
             TabChanged(tab);
         };
@@ -893,6 +897,7 @@ public partial class MainForm : Form
         cw.WindowCloseRequested += (_, _) => BeginInvoke(() => CloseTab(tab));
         cw.ProcessFailed += (_, e) =>
         {
+            DiagLog.Write($"process failed {e.ProcessFailedKind} reason={e.Reason} exit={e.ExitCode} host={Bookmark.HostOf(tab.Url)}");
             if (e.ProcessFailedKind != CoreWebView2ProcessFailedKind.RenderProcessExited) return;
             BeginInvoke(() =>
             {
@@ -916,7 +921,10 @@ public partial class MainForm : Form
         // built-in pages (history, crash notice) are served locally and never reach the network
         cw.AddWebResourceRequestedFilter(InternalPages.Base + "*", CoreWebView2WebResourceContext.All);
         foreach (var pattern in AdBlocker.FilterPatterns())
-            cw.AddWebResourceRequestedFilter(pattern, CoreWebView2WebResourceContext.All, CoreWebView2WebResourceRequestSourceKinds.All);
+            // Document only (pages and their frames), NOT service/shared workers: a worker filter makes
+            // the engine route worker requests through this window, and Gmail's service worker was found
+            // wedged on 2026-11-15 with all its image/font fetches pending (see NetRepair.cs).
+            cw.AddWebResourceRequestedFilter(pattern, CoreWebView2WebResourceContext.All, CoreWebView2WebResourceRequestSourceKinds.Document);
         cw.WebResourceRequested += (_, e) =>
         {
             var served = InternalPages.Serve(e.Request.Uri, history);
@@ -1011,6 +1019,21 @@ public partial class MainForm : Form
         await Task.WhenAny(done.Task, Task.Delay(30000));
         await Task.Delay(8000);
         string keys = "";
+        if (startArgs.Contains("--repairtest"))
+        {
+            // the page gets a service worker; "Repară conexiunea" must remove it and reload the page
+            const string reg = "navigator.serviceWorker.register('/sw.js').then(() => document.title = 'sw-ok').catch(e => document.title = 'sw-fail ' + e)";
+            const string count = "navigator.serviceWorker.getRegistrations().then(r => document.title = 'regs=' + r.length)";
+            await cw.ExecuteScriptAsync(reg);
+            await Task.Delay(3000);
+            keys += $"repair: register -> '{cw.DocumentTitle}'\n";
+            await cw.ExecuteScriptAsync(count); await Task.Delay(1000);
+            keys += $"repair: before -> '{cw.DocumentTitle}'\n";
+            await RepairConnection();
+            await Task.Delay(5000);
+            await cw.ExecuteScriptAsync(count); await Task.Delay(1000);
+            keys += $"repair: after -> '{cw.DocumentTitle}' source={Bookmark.HostOf(cw.Source)}\n";
+        }
         if (startArgs.Contains("--flushtest"))
         {
             var sw = Stopwatch.StartNew();

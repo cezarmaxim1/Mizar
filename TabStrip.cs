@@ -16,6 +16,9 @@ public class BrowserTab
     /// <summary>Requests still loading (tracked only while the tab is in the background, see NetRepair.cs).</summary>
     public Dictionary<string, DateTime> InFlight { get; } = new();
     public bool NetWatch { get; set; }
+    /// <summary>When the current navigation started (diag.log "slow load" line; logging only).</summary>
+    public DateTime LoadStarted { get; set; }
+    public bool SlowLogged { get; set; }
     /// <summary>CDP event receivers must stay referenced, or their events stop after a GC.</summary>
     public List<object> Receivers { get; } = new();
     /// <summary>"history" while the tab shows a built-in Mizar page; null for normal web pages.</summary>

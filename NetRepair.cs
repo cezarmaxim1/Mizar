@@ -114,19 +114,108 @@ public partial class MainForm
         }
     }
 
-    /// <summary>Menu "Repară conexiunea": close stale connections, then reload the active page.</summary>
+    /// <summary>
+    /// Menu "Repară conexiunea": notes the page's state in diag.log, closes stale connections,
+    /// removes the site's service worker (the real cause of the 2026-11-15 Gmail stall: a wedged
+    /// worker kept every image/font fetch pending, and neither F5 nor a socket flush touched it),
+    /// then reloads the active page. Cookies and logins are not touched.
+    /// </summary>
     async Task RepairConnection()
     {
-        var r = await FlushSockets();
-        if (r == "ok") active?.Core?.Reload();
-        else MessageBox.Show(this, "Conexiunea nu a putut fi resetată (" + r + ").", "Mizar",
-            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        var cw = active?.Core;
+        var host = cw == null ? "?" : Bookmark.HostOf(cw.Source);
+        var before = cw == null ? "" : await PageProbe(cw);
+        var flush = await FlushSockets();
+        var sw = cw == null ? "no page" : await ResetServiceWorkers(cw);
+        DiagLog.Write($"repair {host}: before [{before}] flush={flush} sw={sw}");
+        if (cw != null && (flush == "ok" || sw == "ok"))
+        {
+            try { cw.Reload(); } catch { }
+            _ = LogAfterRepair(cw, host);
+        }
+        else if (!IsSelfTest)
+            MessageBox.Show(this, $"Conexiunea nu a putut fi resetată ({flush}; {sw}).", "Mizar",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    /// <summary>
+    /// Stops the engine's running service workers and removes the registrations (and their Cache
+    /// Storage) of the page's origin. The site recreates them on the next load.
+    /// </summary>
+    static async Task<string> ResetServiceWorkers(CoreWebView2 cw)
+    {
+        if (!Uri.TryCreate(cw.Source, UriKind.Absolute, out var u) || (u.Scheme != "https" && u.Scheme != "http"))
+            return "not a web page";
+        try
+        {
+            try
+            {
+                await cw.CallDevToolsProtocolMethodAsync("ServiceWorker.enable", "{}");
+                await cw.CallDevToolsProtocolMethodAsync("ServiceWorker.stopAllWorkers", "{}");
+                await cw.CallDevToolsProtocolMethodAsync("ServiceWorker.disable", "{}");
+            }
+            catch { }
+            var args = JsonSerializer.Serialize(new { origin = u.GetLeftPart(UriPartial.Authority), storageTypes = "service_workers,cache_storage" });
+            await cw.CallDevToolsProtocolMethodAsync("Storage.clearDataForOrigin", args);
+            return "ok";
+        }
+        catch (Exception ex) { return "error: " + ex.Message; }
+    }
+
+    /// <summary>
+    /// What the page looks like right now, without touching the network: images still loading or
+    /// broken, how many resources it loaded, and whether a service worker controls the page.
+    /// </summary>
+    static async Task<string> PageProbe(CoreWebView2 cw)
+    {
+        const string js = "(() => { try { const im=[...document.images]; const res=performance.getEntriesByType('resource'); " +
+            "const c=navigator.serviceWorker && navigator.serviceWorker.controller; " +
+            "return 'ready=' + document.readyState + ' img=' + im.length + ' imgPending=' + im.filter(i=>!i.complete).length + " +
+            "' imgBroken=' + im.filter(i=>i.complete && i.naturalWidth===0).length + ' res=' + res.length + " +
+            "' fonts=' + (document.fonts ? document.fonts.status : '?') + ' sw=' + (c ? c.state : 'none'); } catch(e) { return 'probe error ' + e.message; } })()";
+        try
+        {
+            var t = cw.ExecuteScriptAsync(js);
+            if (await Task.WhenAny(t, Task.Delay(3000)) != t) return "probe timeout (page not responding)";
+            return JsonSerializer.Deserialize<string>(t.Result) ?? "";
+        }
+        catch (Exception ex) { return "probe error " + ex.Message; }
+    }
+
+    async Task LogAfterRepair(CoreWebView2 cw, string host)
+    {
+        try
+        {
+            await Task.Delay(10000);
+            if (IsDisposed) return;
+            DiagLog.Write($"repair {host}: after 10 s [{await PageProbe(cw)}]");
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Logging only (no automatic repair: that could cut a download). Once per navigation, when the
+    /// active tab has been loading for 20 s, notes its state in diag.log.
+    /// </summary>
+    async void LogSlowLoad(BrowserTab? tab)
+    {
+        if (tab?.Core == null || !tab.IsLoading || tab.SlowLogged) return;
+        if ((DateTime.Now - tab.LoadStarted).TotalSeconds < 20) return;
+        tab.SlowLogged = true;
+        try
+        {
+            var host = Bookmark.HostOf(tab.Url);
+            var probe = await PageProbe(tab.Core);
+            DiagLog.Write($"slow load {host}: 20 s [{probe}] tabs={tabs.Count} asleep={tabs.Count(t => t.Core?.IsSuspended == true)}");
+        }
+        catch { }
     }
 
     /// <summary>After the laptop wakes up, old connections are often dead: start with fresh ones.</summary>
     void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
     {
         if (e.Mode != Microsoft.Win32.PowerModes.Resume) return;
+        DiagLog.Write("power resume");
         try
         {
             BeginInvoke(async () =>
@@ -207,6 +296,7 @@ public partial class MainForm
 
             async Task Phase(string name)
             {
+                sb.AppendLine($"page before reload: {await PageProbe(cw)}");
                 pending.Clear(); failed.Clear(); finished = 0;
                 cw.Reload();
                 await Task.Delay(15000);
@@ -219,6 +309,8 @@ public partial class MainForm
             await Phase("before flush");
             sb.AppendLine("flush: " + await FlushSockets());
             await Phase("after flush");
+            sb.AppendLine("service workers: " + await ResetServiceWorkers(cw));
+            await Phase("after service worker reset");
             try { await cw.CallDevToolsProtocolMethodAsync("Network.disable", "{}"); } catch { }
         }
         catch (Exception ex) { sb.AppendLine("error: " + ex.Message); }
@@ -229,6 +321,7 @@ public partial class MainForm
             rFail.DevToolsProtocolEventReceived -= Failed;
         }
         WriteReport(outFile, sb);
+        DiagLog.Write("netdiag: " + string.Join(" | ", sb.ToString().Split('\n').Where(l => l.StartsWith("---")).Select(l => l.Trim())));
     }
 
     static void WriteReport(string file, StringBuilder sb)

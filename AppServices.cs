@@ -96,6 +96,30 @@ static class ErrorLog
 }
 
 /// <summary>
+/// diag.log: one short line per noteworthy event (start, slow or failed page loads, engine process
+/// failures, tabs put to sleep, connection repairs), so a problem can be looked up after the fact.
+/// Hosts only, never paths, titles or page content. Rotated at 256 KB (one .old kept).
+/// </summary>
+static class DiagLog
+{
+    static readonly object Gate = new();
+
+    public static void Write(string line)
+    {
+        try
+        {
+            lock (Gate)
+            {
+                var f = AppPaths.DiagLog;
+                if (File.Exists(f) && new FileInfo(f).Length > 256 * 1024) File.Move(f, f + ".old", true);
+                File.AppendAllText(f, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {line}\n");
+            }
+        }
+        catch { }
+    }
+}
+
+/// <summary>
 /// Keeps Mizar to one process per data folder. A second launch hands its URL to the running
 /// window through a named pipe and exits, so two instances never overwrite each other's files.
 /// </summary>

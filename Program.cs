@@ -52,6 +52,7 @@ static class Program
             // the running instance did not answer (hung?): start anyway rather than lock the user out
         }
 
+        DiagLog.Write($"start v{Updater.CurrentText}");
         var form = new MainForm(args);
         guard?.Listen(form.EnqueueFromOtherInstance);
         Updater.CleanupOld();

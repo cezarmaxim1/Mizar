@@ -19,6 +19,7 @@ public static class AppPaths
     public static string Backups => Path.Combine(Root, "backups");
     public static string SessionFile => Path.Combine(Root, "session.json");
     public static string ErrorLog => Path.Combine(Root, "errors.log");
+    public static string DiagLog => Path.Combine(Root, "diag.log");
     public static string Favicons => Path.Combine(Root, "favicons");
     public static string WebData => Path.Combine(Root, "WebData");
 
