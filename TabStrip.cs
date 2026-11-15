@@ -13,8 +13,9 @@ public class BrowserTab
     bool ownsFavicon;
     public bool IsLoading { get; set; } = true;
     public DateTime LastActive { get; set; } = DateTime.Now;
+    public DateTime LoadingStartedUtc { get; set; }
     /// <summary>Requests still loading (tracked only while the tab is in the background, see NetRepair.cs).</summary>
-    public HashSet<string> InFlight { get; } = new();
+    public Dictionary<string, DateTime> InFlight { get; } = new();
     public bool NetWatch { get; set; }
     /// <summary>CDP event receivers must stay referenced, or their events stop after a GC.</summary>
     public List<object> Receivers { get; } = new();
@@ -74,7 +75,7 @@ public class TabStrip : Control
     float spin;
     readonly System.Windows.Forms.Timer timer = new() { Interval = 50 };
 
-    const string GMin = "", GMax = "", GRestore = "", GClose = "";
+    const string GClose = "\uE8BB";
 
     public TabStrip()
     {
@@ -272,15 +273,15 @@ public class TabStrip : Control
             using var pp = Theme.Round(pr, P(7));
             g.FillPath(hb, pp);
         }
-        Theme.DrawGlyph(g, "", pr, Theme.Text, 10f);
+        Theme.DrawGlyph(g, "\uE710", pr, Theme.Text, 10f);
 
         // window buttons
-        DrawCaption(g, 0, GMin, HMin);
-        DrawCaption(g, 1, Maximized ? GRestore : GMax, HMax);
-        DrawCaption(g, 2, GClose, HClose);
+        DrawCaption(g, 0, HMin);
+        DrawCaption(g, 1, HMax);
+        DrawCaption(g, 2, HClose);
     }
 
-    void DrawCaption(Graphics g, int which, string glyph, int code)
+    void DrawCaption(Graphics g, int which, int code)
     {
         var r = CaptionRect(which);
         bool isClose = code == HClose;

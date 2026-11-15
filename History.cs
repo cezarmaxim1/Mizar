@@ -14,7 +14,7 @@ public class HistoryEntry
 /// Browsing history kept by Mizar itself (WebView2 has no history UI).
 /// Capped at <see cref="Max"/> entries; saved to disk at most every 10 s and on exit.
 /// </summary>
-public class HistoryStore
+public class HistoryStore : IDisposable
 {
     const int Max = 5000;
     readonly List<HistoryEntry> items;
@@ -29,6 +29,8 @@ public class HistoryStore
         saveTimer.Tick += (_, _) => Flush();
         saveTimer.Start();
     }
+
+    public void Dispose() => saveTimer.Dispose();
 
     static List<HistoryEntry> Load()
     {

@@ -230,6 +230,7 @@ public class BookmarkStore
 
     void Save(bool backup)
     {
+        InvalidateCache();
         try
         {
             var tmp = AppPaths.BookmarksFile + ".tmp";
@@ -254,6 +255,7 @@ public class BookmarkStore
 
     public void NotifyChanged()
     {
+        InvalidateCache();
         UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         Save();
         Changed?.Invoke();
@@ -262,12 +264,19 @@ public class BookmarkStore
     /// <summary>Applies bookmarks downloaded from Google Drive without re-triggering an upload.</summary>
     public void ReplaceFromSync(BookmarkStore remote)
     {
+        InvalidateCache();
         Bar = remote.Bar ?? new();
         Other = remote.Other ?? new();
         UpdatedAt = remote.UpdatedAt;
         Save();
         Changed?.Invoke();
     }
+
+    List<Bookmark>? urlCache;
+    Dictionary<string, Bookmark>? urlMap;
+    HashSet<string>? hostCache;
+
+    void InvalidateCache() { urlCache = null; urlMap = null; hostCache = null; }
 
     static IEnumerable<Bookmark> Walk(IEnumerable<Bookmark> list)
     {
@@ -279,16 +288,36 @@ public class BookmarkStore
         }
     }
 
-    public IEnumerable<Bookmark> AllUrls() => Walk(Bar).Concat(Walk(Other)).Where(b => !b.IsFolder);
+    public IEnumerable<Bookmark> AllUrls() => urlCache ??= Walk(Bar).Concat(Walk(Other)).Where(b => !b.IsFolder).ToList();
 
     static string Key(string url) => url.TrimEnd('/');
 
-    public Bookmark? FindByUrl(string? url) =>
-        string.IsNullOrEmpty(url) ? null :
-        AllUrls().FirstOrDefault(b => string.Equals(Key(b.Url!), Key(url), StringComparison.OrdinalIgnoreCase));
+    public Bookmark? FindByUrl(string? url)
+    {
+        if (string.IsNullOrEmpty(url)) return null;
+        if (urlMap == null)
+        {
+            urlMap = new Dictionary<string, Bookmark>(StringComparer.OrdinalIgnoreCase);
+            foreach (var b in AllUrls())
+                if (!string.IsNullOrEmpty(b.Url)) urlMap.TryAdd(Key(b.Url), b);
+        }
+        return urlMap.TryGetValue(Key(url), out var hit) ? hit : null;
+    }
 
-    public bool HasHost(string host) =>
-        AllUrls().Any(b => Bookmark.HostOf(b.Url).Equals(host, StringComparison.OrdinalIgnoreCase));
+    public bool HasHost(string host)
+    {
+        if (string.IsNullOrEmpty(host)) return false;
+        if (hostCache == null)
+        {
+            hostCache = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var b in AllUrls())
+            {
+                var h = Bookmark.HostOf(b.Url);
+                if (h.Length > 0) hostCache.Add(h);
+            }
+        }
+        return hostCache.Contains(host);
+    }
 
     public List<Bookmark>? ParentOf(Bookmark target)
     {
@@ -306,7 +335,10 @@ public class BookmarkStore
         return Find(Bar) ?? Find(Other);
     }
 
-    public void Remove(Bookmark b) => ParentOf(b)?.Remove(b);
+    public void Remove(Bookmark b)
+    {
+        if (ParentOf(b)?.Remove(b) == true) InvalidateCache();
+    }
 
     public static bool IsDescendant(Bookmark folder, Bookmark candidate) =>
         folder.Children != null && Walk(folder.Children).Contains(candidate);
@@ -350,6 +382,7 @@ public class BookmarkStore
             if (c > 0 && isNew) Other.Add(folder);
             added += c;
         }
+        if (added > 0) InvalidateCache();
         return added;
     }
 
@@ -403,8 +436,11 @@ static class FaviconCache
     public static Image? Get(string host)
     {
         if (string.IsNullOrEmpty(host)) return null;
-        if (Cache.TryGetValue(host, out var img)) return img;
-        img = null;
+        lock (Cache)
+        {
+            if (Cache.TryGetValue(host, out var cached)) return cached;
+        }
+        Image? img = null;
         try
         {
             var f = FileFor(host);
@@ -415,8 +451,16 @@ static class FaviconCache
             }
         }
         catch { }
-        Cache[host] = img;
-        return img;
+        lock (Cache)
+        {
+            if (Cache.TryGetValue(host, out var existing))
+            {
+                img?.Dispose();
+                return existing;
+            }
+            Cache[host] = img;
+            return img;
+        }
     }
 
     /// <summary>Saves the icon if none is stored yet. Returns true when a new icon was written.</summary>
@@ -434,7 +478,7 @@ static class FaviconCache
                 g.DrawImage(img, 0, 0, 32, 32);
             }
             bmp.Save(f, ImageFormat.Png);
-            Cache.Remove(host);
+            lock (Cache) Cache.Remove(host);
             return true;
         }
         catch { return false; }
@@ -465,7 +509,7 @@ static class AdBlocker
     public static readonly string[] Domains =
     {
         "doubleclick.net", "googlesyndication.com", "googleadservices.com", "adservice.google.com",
-        "googletagservices.com", "pagead2.googlesyndication.com", "adnxs.com", "taboola.com", "outbrain.com",
+        "googletagservices.com", "adnxs.com", "taboola.com", "outbrain.com",
         "criteo.com", "criteo.net", "amazon-adsystem.com", "pubmatic.com", "rubiconproject.com", "openx.net",
         "adsrvr.org", "moatads.com", "casalemedia.com", "smartadserver.com", "teads.tv", "adform.net",
         "33across.com", "sharethrough.com", "media.net", "zemanta.com", "revcontent.com", "mgid.com",
@@ -527,6 +571,8 @@ static class AdBlocker
 
     static readonly HashSet<string> AdSet = new(Domains, StringComparer.OrdinalIgnoreCase);
     static readonly HashSet<string> TrackerSet = new(TrackerDomains, StringComparer.OrdinalIgnoreCase);
+    static readonly HashSet<string>.AlternateLookup<ReadOnlySpan<char>> AdLookup = AdSet.GetAlternateLookup<ReadOnlySpan<char>>();
+    static readonly HashSet<string>.AlternateLookup<ReadOnlySpan<char>> TrackerLookup = TrackerSet.GetAlternateLookup<ReadOnlySpan<char>>();
 
     /// <summary>Blocked-request counters (for diagnostics).</summary>
     public static int BlockedAds, BlockedTrackers;
@@ -545,17 +591,23 @@ static class AdBlocker
     public static Kind Classify(string url)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var u)) return Kind.None;
-        var host = u.Host.ToLowerInvariant();
+        var host = u.Host;
         var path = u.AbsolutePath;
-        if (host == "connect.facebook.net" && (path.EndsWith("/fbevents.js") || path.StartsWith("/signals/"))) return Kind.Tracker;
-        if ((host == "www.facebook.com" || host == "facebook.com") && (path == "/tr" || path.StartsWith("/tr/"))) return Kind.Tracker;
+        if (host.Equals("connect.facebook.net", StringComparison.OrdinalIgnoreCase) &&
+            (path.EndsWith("/fbevents.js", StringComparison.Ordinal) || path.StartsWith("/signals/", StringComparison.Ordinal)))
+            return Kind.Tracker;
+        if ((host.Equals("www.facebook.com", StringComparison.OrdinalIgnoreCase) || host.Equals("facebook.com", StringComparison.OrdinalIgnoreCase)) &&
+            (path == "/tr" || path.StartsWith("/tr/", StringComparison.Ordinal)))
+            return Kind.Tracker;
 
-        var h = host;
-        while (h.Contains('.'))
+        var h = host.AsSpan();
+        while (true)
         {
-            if (AdSet.Contains(h)) return Kind.Ad;
-            if (TrackerSet.Contains(h)) return Kind.Tracker;
-            h = h[(h.IndexOf('.') + 1)..];
+            int dot = h.IndexOf('.');
+            if (dot < 0) break;
+            if (AdLookup.Contains(h)) return Kind.Ad;
+            if (TrackerLookup.Contains(h)) return Kind.Tracker;
+            h = h[(dot + 1)..];
         }
         return Kind.None;
     }

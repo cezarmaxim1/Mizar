@@ -1,6 +1,7 @@
 # Mizar — guide for AI assistants
 
 > Written for Gemini (and any other AI coding assistant). `CLAUDE.md` holds the same guide for Claude. When you change one, update the other.
+> See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the module ownership map and key symbols before reading `.cs` source files.
 >
 > **Read this whole file before changing code.** It records decisions that were tested and the reasons behind them; several look like simplifications you might be tempted to undo (see Gotchas and Known open issues).
 
@@ -182,16 +183,15 @@ Baseline measured on 2026-11-13, with one Google tab: about 400 MB of WebView2 p
 - **Text measurement:** measure without `EndEllipsis`. With it and no size limit, the width came back as just "r…".
 - **Fonts:** title 11 pt, address 10 pt, rows 42 px (logical). The owner found the earlier 9.75/9 pt too small.
 
-## Known open issues (2026-11-14)
+## Known issues & fixes (2026-11-14 / 2026-11-15)
 
 0. **Gmail stuck: no icons, endless loading, "Not connected".** Reproduced live on 2026-11-14 (instance only 15 minutes old, no sleep involved). DevTools showed every request to Google `Pending` with 0 bytes, while the same server answered 200 from PowerShell. The engine's network process had a **single** connection to Google (HTTP/2 over IPv6, which all Google hosts share), opened when Gmail loaded, that had silently stopped carrying data; new requests kept queueing on it. Waking the sleeping tabs didn't help, and neither did F5.
-   - **Fix:** `FlushSockets()` closes all the engine's connections (the "Flush socket pools" button of `edge://net-internals/#sockets`, clicked in a hidden WebView). It runs from the menu "Repară conexiunea" (then reloads the page), after the laptop wakes up, and from `Mizar.exe --fixnet`. Verified with `--selftest ... --flushtest`: "ok" in about 250 ms.
-   - **Suspected trigger (unproven):** a background tab frozen by `TrySuspendAsync` mid-response. The other tab open at the time was the owner's running-tracker (Netlify), which syncs through Google Sheets / Apps Script, so it shares the Google connection. Since then tabs aren't suspended while a request is in flight (see "Sleeping tabs").
-   - **If it recurs:** run `Mizar.exe --netdiag F:
-etdiag.txt` **through Explorer** while it's stuck. The running window reloads the active tab, waits 15 s, lists pending/failed requests (host + type only), flushes, and does it again, so the report shows whether the flush fixed it. Next step if flushing works: detect the stall automatically. If it doesn't: try `--disable-quic` or forcing IPv4.
+   - **Fix:** `FlushSockets()` closes all the engine's connections (the "Flush socket pools" button of `edge://net-internals/#sockets`, clicked in a hidden WebView). It runs from the menu "Repară conexiunea" (then reloads the page), after the laptop wakes up, automatically from `zoomPoll` if the active tab keeps loading for >15 s (at most once per 2 min, guarded by `flushing`), and from `Mizar.exe --fixnet`. Verified with `--selftest ... --flushtest`: "ok" in about 250 ms.
+   - **Suspected trigger (unproven):** a background tab frozen by `TrySuspendAsync` mid-response. The other tab open at the time was the owner's running-tracker (Netlify), which syncs through Google Sheets / Apps Script, so it shares the Google connection. Since then tabs aren't suspended while HTTP requests are in flight (`InFlight` ignores `WebSocket`/`EventSource`/non-HTTP and expires entries after 60 s).
+   - **If it recurs:** run `Mizar.exe --netdiag F:\netdiag.txt` **through Explorer** while it's stuck. The running window reloads the active tab, waits 15 s, lists pending/failed requests (host + type only), flushes, and does it again, so the report shows whether the flush fixed it. If flushing still isn't enough, try `--disable-quic` or forcing IPv4.
 
-1. **Hand-off to the running window failed once.** In a test that started from a restored session (copy of the owner's data), a second launch with a URL exited normally, but no new tab appeared in the session and the window ended up minimized. An earlier hand-off test without a restored session worked. Investigate `OpenFromOtherInstance` and the pipe listener; `errors.log` stayed empty.
-2. **`SaveWindow` while minimized saves `Maximized = false`,** so the next start isn't maximized. Fix: skip the window part of the save when `WindowState == Minimized`, or keep the last known state.
+1. **Hand-off to the running window (fixed 2026-11-15):** URLs arriving on the pipe before `sessionReady` are queued in `pendingPipeUrls` via `EnqueueFromOtherInstance` and drained after the initial tab is created/restored. `OpenFromOtherInstance` restores minimized windows via `lastWindowState` so maximized windows stay maximized.
+2. **`SaveWindow` while minimized (fixed 2026-11-15):** `lastWindowState` tracks the last non-minimized `WindowState`, so closing while minimized preserves `settings.Maximized`.
 
 ## Gotchas
 

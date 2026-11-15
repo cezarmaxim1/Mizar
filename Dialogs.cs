@@ -196,7 +196,7 @@ public class SettingsForm : Form
         }
         RefreshDriveUi();
 
-        btnDriveConn.Click += async (_, _) =>
+        btnDriveConn.Click += (_, _) =>
         {
             if (DriveSync.IsConnected(s))
             {
@@ -211,17 +211,18 @@ public class SettingsForm : Form
                 using var apiDlg = new DriveApiDialog(s, openUrl);
                 if (apiDlg.ShowDialog(this) != DialogResult.OK) return;
             }
-            btnDriveConn.Enabled = btnDriveSync.Enabled = false;
-            driveStatus.Text = "Se deschide pagina de conectare Google...";
-            try { await connectDrive(); }
-            finally { btnDriveConn.Enabled = true; RefreshDriveUi(); }
+            if (string.IsNullOrWhiteSpace(s.DriveClientId)) return;
+            SaveFields();
+            DialogResult = DialogResult.OK;
+            Close();
+            _ = connectDrive();
         };
         btnDriveSync.Click += async (_, _) =>
         {
             btnDriveSync.Enabled = false;
             driveStatus.Text = "Se sincronizează...";
             try { await syncDrive(); }
-            finally { RefreshDriveUi(); }
+            finally { if (!IsDisposed) RefreshDriveUi(); }
         };
         btnDriveApi.Click += (_, _) =>
         {
@@ -248,7 +249,7 @@ public class SettingsForm : Form
             btnUpd.Enabled = false;
             updStatus.Text = "Se verifică...";
             try { await checkUpdates(); }
-            finally { btnUpd.Enabled = true; if (!IsDisposed) RefreshUpdateUi(); }
+            finally { if (!IsDisposed) { btnUpd.Enabled = true; RefreshUpdateUi(); } }
         };
         col.Controls.Add(updStatus);
         col.Controls.Add(autoUpdate);
@@ -269,25 +270,27 @@ public class SettingsForm : Form
         Theme.ApplyToDialog(this);
     }
 
+    void SaveFields()
+    {
+        var h = home.Text.Trim();
+        s.HomePage = h.Length == 0 ? "https://www.google.com" : h;
+        s.DownloadFolder = folder.Text;
+        s.AskWhereToSave = ask.Checked;
+        s.BlockAds = ads.Checked;
+        s.BlockTrackers = trackers.Checked;
+        s.BlockThirdPartyCookies = thirdParty.Checked;
+        s.WebColorScheme = Schemes[Math.Max(0, scheme.SelectedIndex)].key;
+        s.SavePasswords = pw.Checked;
+        s.ShowBookmarksBar = bar.Checked;
+        s.RestoreSession = restore.Checked;
+        s.ClearHistoryOnExit = clearOnExit.Checked;
+        s.AutoUpdate = autoUpdate.Checked;
+        s.Save();
+    }
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (DialogResult == DialogResult.OK)
-        {
-            var h = home.Text.Trim();
-            s.HomePage = h.Length == 0 ? "https://www.google.com" : h;
-            s.DownloadFolder = folder.Text;
-            s.AskWhereToSave = ask.Checked;
-            s.BlockAds = ads.Checked;
-            s.BlockTrackers = trackers.Checked;
-            s.BlockThirdPartyCookies = thirdParty.Checked;
-            s.WebColorScheme = Schemes[Math.Max(0, scheme.SelectedIndex)].key;
-            s.SavePasswords = pw.Checked;
-            s.ShowBookmarksBar = bar.Checked;
-            s.RestoreSession = restore.Checked;
-            s.ClearHistoryOnExit = clearOnExit.Checked;
-            s.AutoUpdate = autoUpdate.Checked;
-            s.Save();
-        }
+        if (DialogResult == DialogResult.OK) SaveFields();
         base.OnFormClosing(e);
     }
 }
@@ -318,7 +321,13 @@ public class DriveApiDialog : Form
 
         var p = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Padding = new Padding(18, 14, 18, 14) };
         p.Controls.Add(info);
-        p.Controls.Add(Ui.Btn("Deschide Google Cloud Console", (_, _) => openUrl("https://console.cloud.google.com/apis/credentials")));
+        p.Controls.Add(Ui.Btn("Deschide Google Cloud Console", (_, _) =>
+        {
+            s.DriveClientId = idBox.Text.Trim();
+            s.DriveClientSecret = secBox.Text.Trim();
+            s.Save();
+            openUrl("https://console.cloud.google.com/apis/credentials");
+        }));
         p.Controls.Add(new Label { Text = "Client ID:", AutoSize = true, Margin = new Padding(0, 10, 0, 2) });
         p.Controls.Add(idBox);
         p.Controls.Add(new Label { Text = "Client Secret (dacă există):", AutoSize = true, Margin = new Padding(0, 8, 0, 2) });
@@ -381,7 +390,7 @@ public class BookmarkManagerForm : Form
         side.Controls.Add(B("Mută jos", () => MoveSel(1)));
         side.Controls.Add(new Label { Text = "Poți și trage cu\nmouse-ul elementele\nîn alt loc sau folder.", AutoSize = true, Tag = "muted", Margin = new Padding(0, 12, 0, 0) });
 
-        tree.NodeMouseDoubleClick += (_, e) => { tree.SelectedNode = e.Node; if (e.Node.Tag is Bookmark { IsFolder: false }) OpenSelected(); };
+        tree.NodeMouseDoubleClick += (_, e) => { tree.SelectedNode = e.Node; if (e.Node?.Tag is Bookmark { IsFolder: false }) OpenSelected(); };
         tree.KeyDown += (_, e) =>
         {
             if (e.KeyCode == Keys.Delete) DeleteSelected();
@@ -396,6 +405,7 @@ public class BookmarkManagerForm : Form
         Controls.Add(side);
         Rebuild();
         Theme.ApplyToDialog(this);
+        Disposed += (_, _) => images.Dispose();
     }
 
     Image NodeImage(Bookmark b, out string key)

@@ -1,0 +1,51 @@
+# Mizar Architecture
+
+> Module ownership map and key symbol reference for **Mizar** (`.NET 10`, WinForms + `Microsoft.Web.WebView2`).
+> Check this map first instead of re-reading full `.cs` files. Behavioral constraints, MSIX gotchas, and build/test recipes stay in `CLAUDE.md` / `AI.md`.
+
+---
+
+## 1. Architecture & Process Model
+
+* **UI Framework:** Single-window WinForms app (`ApplicationHighDpiMode = PerMonitorV2`), frameless custom caption (`WM_NCCALCSIZE` + `WM_NCHITTEST`) with owner-drawn chrome and dialogs.
+* **Web Engine:** One shared `CoreWebView2Environment` stored in `MainForm.envTask` pointing at `%LOCALAPPDATA%\Mizar\WebData` (or `$MIZAR_DATA_DIR\WebData` during isolated tests). All open tabs run in that shared environment; inactive background tabs switch to `CoreWebView2MemoryUsageTargetLevel.Low` and sleep via `TrySuspendAsync()` after 5 minutes if idle.
+* **Single Instance vs Self-Test:** Normal launches acquire a per-data-folder `SingleInstance` mutex and forward URLs or maintenance commands (`mizar-cmd:...`) over a named pipe to the running `MainForm`. Launches with `--selftest` bypass `SingleInstance` and exit after writing their diagnostic output.
+* **Partial Class Split (`MainForm`):** `MainForm` is split across three files by concern:
+  1. `MainForm.cs` — Window shell, layout, tab lifecycle, navigation, bookmarks, downloads, zoom, shortcuts, self-test runner.
+  2. `NetRepair.cs` — Background-tab CDP network watch (`InFlight`), socket pool flushing (`edge://net-internals/#sockets`), wake-from-sleep handler, `--netdiag`/`--fixnet`.
+  3. `Updater.cs` (bottom partial class) — Monthly & manual GitHub Releases check, download/staging orchestration, restart prompt.
+
+---
+
+## 2. Module Ownership Map
+
+| File | Types / Classes | Owns (State, Disk Files, Responsibilities) | Key Symbols & Invariants |
+|---|---|---|---|
+| `Program.cs` | `Program` | Entry point, CLI flag dispatch, single-instance guard, post-exit update swap. | `Main` handles `--register`, `--unregister`, `--release-genkey`, `--release-sign`, `--selftest`, `--fixnet`, `--netdiag`; calls `ErrorLog.Install()`, wires `guard?.Listen(form.EnqueueFromOtherInstance)`, calls `Updater.CleanupOld()`, and applies staged updates after `Application.Run(form)` exits. |
+| `MainForm.cs` | `MainForm` *(partial)* | Window state (`lastWindowState`), chrome controls (`root`, `tabStrip`, `nav`, `addressBox`, `bar`, `content`, `suggest`, `zoomChip`, `menu`), timers (`sleepTimer`, `zoomPoll`, `sessionTimer`, `driveUploadTimer`), `tabs`/`active`/`closedTabs`, `settings`, `bookmarks`, `history`, `pendingPipeUrls`. | **Lifecycle:** `Shown` restores lazy session tabs (if `RestoreSession`), creates/activates first tab, drains `pendingPipeUrls` once `sessionReady`, clears history (if `ClearHistoryOnExit`), triggers one-time `ImportOperaFavicons`/`PrefetchFavicons`/`SyncBookmarksAsync`/`AutoCheckForUpdates`. **Tabs:** `NewTabFocused` (`about:blank`), `CreateTab`, `AddLazyTab`, `InitTab`, `Wire`, `Activate`, `CloseTab`, `SleepInactiveTabs`. **Caption/Layout:** `OnHandleCreated`, `WndProc` (`WM_NCCALCSIZE`, `WM_NCHITTEST`), `RestoreWindow`, `SaveWindow`, `SetFullscreen`, `ApplyTheme`. **Navigation/Features:** `Normalize`, `Navigate`, `ApplySiteZoom`, `OnZoomChanged`, `CheckZoom`, `RebuildBookmarkBar`, `OnDownloadStarting`, `ShortcutScript`, `RunShortcut`, `ProcessCmdKey`, `RunSelfTest`. |
+| `TabStrip.cs` | `BrowserTab`, `TabStrip` | Per-tab model & custom owner-drawn floating tab strip + vector caption buttons. | **`BrowserTab`:** owns `View` (`WebView2`), `Title`, `Url`, `Favicon`/`SetFavicon(img, owned)`, `IsLoading`, `LastActive`, `LoadingStartedUtc`, `InFlight` (`Dictionary<string, DateTime>`), `NetWatch`, `Receivers`, `Internal`, `PendingUrl`, `Crashes`, `CertError`, `ZoomHost`, `ExpectedZoom`, `Core`. **`TabStrip`:** 20 fps loading spinner timer (runs only while a tab loads), right-edge title text fade (`LinearGradientBrush`), `CloseHitRect` extending to top-right/bottom-right corner, `IsInteractive` + `HTTRANSPARENT`. |
+| `ModernUi.cs` | `Theme`, `HitTestPanel`, `RoundButton`, `TextChip`, `AddressBox`, `SecurityLevel`, `ModernRenderer`, `Native` | Windows light/dark theme palette, reusable flat controls, DWM/User32/UxTheme P/Invokes. | **`Theme`:** reads `AppsUseLightTheme`, caches `GlyphFonts`, provides `ApplyToWindow`, `ApplyToDialog`, `Round`, `DrawGlyph`. **`HitTestPanel`:** `PassThrough` lets empty tab-strip regions become `HTCAPTION`/`HTTOP`. **`AddressBox`:** pill text field + `SecurityLevel` chip (`Secure`/`Insecure`/`CertError`/`Internal`). **`ModernRenderer`:** dark/light `ToolStripProfessionalRenderer`. |
+| `Storage.cs` | `AppPaths`, `Settings`, `SessionData`, `SessionTab`, `KnownFolders`, `Bookmark`, `BookmarkStore`, `FaviconCache`, `AdBlocker` | Data folder paths, JSON config/sessions/bookmarks, backup rotation, memory/disk icon cache, ad & tracker rules. | **`AppPaths`:** `%LOCALAPPDATA%\Mizar` or `MIZAR_DATA_DIR`. **`BookmarkStore`:** `bookmarks.json`, `.bak`, up to 10 daily backups in `backups/`, `ImportFromOpera`, lazy caches (`urlCache`, `urlMap`, `hostCache`) invalidated on every mutation (`Save`, `NotifyChanged`, `ReplaceFromSync`, `ImportFromOpera`, `Remove`). **`FaviconCache`:** `favicons/*.png` + `lock (Cache)` for thread-safe reads/writes. **`AdBlocker`:** `Domains`, `TrackerDomains`, `TrackerPatterns` (Facebook Pixel paths only), zero-allocation `Classify()` via `GetAlternateLookup<ReadOnlySpan<char>>()`. |
+| `Dialogs.cs` | `Ui`, `EditDialog`, `SettingsForm`, `DriveApiDialog`, `BookmarkManagerForm`, `Icons` | Modal WinForms dialogs and vector folder/globe fallback icons. | **`SettingsForm`:** edits `Settings`, triggers data clear (`ClearData`), Opera import, Drive connect/sync/disconnect (closes `SettingsForm` before launching OAuth so the auth tab isn't blocked by a modal dialog), and manual update check. **`BookmarkManagerForm`:** TreeView with drag-and-drop (`OnDrop`) and `ImageList` cleanup on dispose. |
+| `DriveSync.cs` | `DriveSync` | Bookmark sync via Google Drive REST API v3 + OAuth 2.0 PKCE + DPAPI encryption. | Stores encrypted refresh/access tokens (`DriveTokenEnc`) with Windows `CryptProtectData`; loopback `HttpListener` OAuth (`ConnectAsync`); serializes Drive calls through `SemaphoreSlim Gate` (`SyncAsync`, `UploadAsync`) targeting `mizar-bookmarks.json` with `drive.file` scope. |
+| `History.cs` | `HistoryEntry`, `HistoryStore` | Visit history (`history.json`, max `5000` entries) and HTML UI for `https://mizar.internal/history`. | Batches disk writes via 10 s `saveTimer` (`IDisposable`), respects `ReadOnly` during tests on real data, exposes `Visit`, `UpdateTitle`, `NewestFirst`, `Delete`, `Clear`, `BuildPage`. |
+| `Suggest.cs` | `Suggestion`, `SuggestBox` | Address-bar autocomplete ranking and non-focusable dropdown popup. | `SuggestBox.Find` searches bookmarks then `HistoryStore.NewestFirst()`, ranks prefix matches first, filters long redirect queries (`> 80` chars) and passthrough titles, deduplicates by `host + path`. |
+| `OperaFavicons.cs` | `OperaFavicons` | One-time SQLite extraction of Opera bookmark icons into `favicons/u_<hash>.png`. | Copies Opera's locked `Favicons` DB to `%TEMP%`, scores icons closest to 32 px, stores `u_<hash>` and host fallbacks, writes `opera-favicons.done`. |
+| `AppServices.cs` | `InternalPages`, `ErrorLog`, `SingleInstance`, `DefaultBrowser` | Built-in virtual host responses, crash logging, IPC lock/pipe, HKCU browser registration. | **`InternalPages`:** serves `/history` and `/crashed` from `WebResourceRequested` (`X-Frame-Options: DENY`). **`ErrorLog`:** `errors.log` rotated at 512 KB. **`SingleInstance`:** `Local\Mizar.Instance.<id>` mutex + `Mizar.Open.<id>` pipe. **`DefaultBrowser`:** registers `MizarHTML` ProgID and `StartMenuInternet\Mizar`. |
+| `NetRepair.cs` | `MainForm` *(partial)* | Anti-freeze protection for HTTP/2 socket pools and background tab suspension guard. | **`WireNetWatch`/`SetNetWatch`:** enables CDP `Network` only on background tabs; tracks active HTTP/HTTPS non-streaming requests in `BrowserTab.InFlight` (expires > 60 s). **`FlushSockets`:** guarded by `flushing`, clicks `sockets-view-flush-button` on `edge://net-internals/#sockets`. Also owns `OnPowerModeChanged`, `RepairConnection`, `RunCommand`, `RunNetDiag`. |
+| `Updater.cs` | `Updater`, `MainForm` *(partial)* | GitHub Releases self-updater (`cezarmaxim1/Mizar`) + release signing CLI tools. | Verifies ECDSA P-256 signature (`PublicKey`) over `"<version>\n<sha256>"`, extracts to `update/staged`, swaps via `*.old` on close (`ApplyStaged`, `CleanupOld`), provides `--release-genkey` and `--release-sign`. |
+| `release.ps1` | — *(PowerShell)* | End-to-end signed release pipeline. | Validates clean git tree and `%USERPROFILE%\.mizar-release\signing-key.pem`, updates `<Version>` in `Mizar.csproj`, publishes & strips `.xml`/`.pdb`/`Microsoft.Web.WebView2.Wpf.dll`, zips, signs with `--release-sign`, commits/tags/pushes, creates GitHub release via `gh`. |
+
+---
+
+## 3. Cross-Cutting Flows & "Where to Edit"
+
+| Task | Files / Entry Points |
+|---|---|
+| **Theme colors or rounded control visuals** | `ModernUi.cs` (`Theme` palette, `RoundButton`, `AddressBox`, `ModernRenderer`), `TabStrip.cs` (`TabStrip.OnPaint`) |
+| **Add a keyboard shortcut** | Add **both** in `MainForm.ProcessCmdKey` (WinForms focus) and `MainForm.ShortcutScript` + `RunShortcut` (WebView2 focus) in `MainForm.cs` |
+| **Add a setting / privacy toggle** | Property in `Settings` (`Storage.cs`) -> UI control + `SaveFields()` in `SettingsForm` (`Dialogs.cs`) -> apply in `MainForm.ApplySettings()` / `EngineOptions()` (`MainForm.cs`) |
+| **Change ad/tracker rules or exceptions** | `AdBlocker.Domains`, `TrackerDomains`, `TrackerPatterns`, `Classify` (`Storage.cs`); `WebResourceRequested` (`MainForm.cs`) |
+| **Debug stalled pages / network hangs** | `NetRepair.cs` (`WireNetWatch`, `FlushSockets`, `RunNetDiag`) and `zoomPoll.Tick` auto-flush check (`MainForm.cs`) |
+| **Change bookmark / Drive sync behavior** | Data & cache in `BookmarkStore` (`Storage.cs`), tree UI in `BookmarkManagerForm` (`Dialogs.cs`), OAuth/REST v3 in `DriveSync.cs`, triggers in `MainForm.cs` |
+| **Change self-update or signing** | `Updater.cs` and `release.ps1` (`MainForm.AutoCheckForUpdates` / `Program.Main`) |

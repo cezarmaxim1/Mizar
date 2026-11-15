@@ -106,7 +106,7 @@ public class SuggestBox : Control
                 g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 g.DrawImage(icon, x, row.Top + (row.Height - ic) / 2, ic, ic);
             }
-            else Theme.DrawGlyph(g, it.IsBookmark ? "" : "", new Rectangle(x, row.Top, ic, row.Height), Theme.Muted, 10.5f);
+            else Theme.DrawGlyph(g, it.IsBookmark ? "\uE734" : "\uE81C", new Rectangle(x, row.Top, ic, row.Height), Theme.Muted, 10.5f);
 
             int textLeft = x + ic + P(14);
             int avail = row.Right - P(12) - textLeft;

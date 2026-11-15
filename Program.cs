@@ -53,11 +53,7 @@ static class Program
         }
 
         var form = new MainForm(args);
-        guard?.Listen(url =>
-        {
-            try { if (form.IsHandleCreated && !form.IsDisposed) form.BeginInvoke(() => form.OpenFromOtherInstance(url)); }
-            catch { }
-        });
+        guard?.Listen(form.EnqueueFromOtherInstance);
         Updater.CleanupOld();
         Application.Run(form);
 

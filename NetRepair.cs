@@ -16,6 +16,7 @@ namespace Mizar;
 public partial class MainForm
 {
     DateTime lastFlush = DateTime.MinValue;
+    bool flushing;
 
     // ---------- Don't freeze a tab in the middle of a request ----------
     //
@@ -43,10 +44,22 @@ public partial class MainForm
         tab.Receivers.AddRange(new object[] { sent, fin, fail });
         sent.DevToolsProtocolEventReceived += (_, e) =>
         {
-            if (tab.NetWatch && Id(e) is { } id) tab.InFlight.Add(id);
+            if (!tab.NetWatch) return;
+            try
+            {
+                using var d = JsonDocument.Parse(e.ParameterObjectAsJson);
+                var r = d.RootElement;
+                var type = r.TryGetProperty("type", out var t) ? t.GetString() : null;
+                if (type is "WebSocket" or "EventSource") return;
+                var url = r.GetProperty("request").GetProperty("url").GetString();
+                if (url == null || !(url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                                     url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))) return;
+                if (r.GetProperty("requestId").GetString() is { } id) tab.InFlight[id] = DateTime.UtcNow;
+            }
+            catch { }
         };
-        fin.DevToolsProtocolEventReceived += (_, e) => { if (Id(e) is { } id) tab.InFlight.Remove(id); };
-        fail.DevToolsProtocolEventReceived += (_, e) => { if (Id(e) is { } id) tab.InFlight.Remove(id); };
+        fin.DevToolsProtocolEventReceived += (_, e) => { if (tab.NetWatch && tab.InFlight.Count > 0 && Id(e) is { } id) tab.InFlight.Remove(id); };
+        fail.DevToolsProtocolEventReceived += (_, e) => { if (tab.NetWatch && tab.InFlight.Count > 0 && Id(e) is { } id) tab.InFlight.Remove(id); };
     }
 
     async Task SetNetWatch(BrowserTab tab, bool on)
@@ -70,6 +83,8 @@ public partial class MainForm
     async Task<string> FlushSockets()
     {
         if (envTask == null) return "no engine";
+        if (flushing) return "busy";
+        flushing = true;
         CoreWebView2Controller? ctl = null;
         try
         {
@@ -92,7 +107,11 @@ public partial class MainForm
             return "button missing";
         }
         catch (Exception ex) { ErrorLog.Write("FlushSockets", ex); return "error: " + ex.Message; }
-        finally { try { ctl?.Close(); } catch { } }
+        finally
+        {
+            flushing = false;
+            try { ctl?.Close(); } catch { }
+        }
     }
 
     /// <summary>Menu "Repară conexiunea": close stale connections, then reload the active page.</summary>
@@ -113,7 +132,8 @@ public partial class MainForm
             BeginInvoke(async () =>
             {
                 await Task.Delay(3000);
-                await FlushSockets();
+                if (!flushing && (DateTime.Now - lastFlush).TotalSeconds >= 10)
+                    await FlushSockets();
             });
         }
         catch { }

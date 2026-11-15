@@ -35,9 +35,11 @@ public partial class MainForm : Form
     readonly SuggestBox suggest = new();
     readonly System.Windows.Forms.Timer sessionTimer = new() { Interval = 5000 };
     bool sessionDirty;
+    FormWindowState lastWindowState = FormWindowState.Normal;
+    readonly Queue<string> pendingPipeUrls = new();
 
-    const string GBack = "", GFwd = "", GReload = "", GStop = "", GHome = "",
-        GStar = "", GStarFull = "", GMore = "";
+    const string GBack = "\uE72B", GFwd = "\uE72A", GReload = "\uE72C", GStop = "\uE711", GHome = "\uE80F",
+        GStar = "\uE734", GStarFull = "\uE735", GMore = "\uE712";
 
     int S(int v) => (int)Math.Round(v * DeviceDpi / 96f);
 
@@ -54,6 +56,7 @@ public partial class MainForm : Form
         Size = new Size(S(1280), S(820));
         StartPosition = FormStartPosition.CenterScreen;
         RestoreWindow();
+        lastWindowState = WindowState == FormWindowState.Minimized ? FormWindowState.Normal : WindowState;
 
         globe = Icons.Globe(S(16));
         folderIcon = Icons.Folder(S(16));
@@ -78,12 +81,23 @@ public partial class MainForm : Form
         };
         Resize += (_, _) =>
         {
+            if (WindowState != FormWindowState.Minimized) lastWindowState = WindowState;
             bool max = WindowState == FormWindowState.Maximized;
             if (tabStrip.Maximized != max) { tabStrip.Maximized = max; tabStrip.Invalidate(); }
         };
         sleepTimer.Tick += async (_, _) => await SleepInactiveTabs();
         sleepTimer.Start();
-        zoomPoll.Tick += (_, _) => CheckZoom(active);
+        zoomPoll.Tick += (_, _) =>
+        {
+            CheckZoom(active);
+            if (active is { IsLoading: true, Core: not null } && !flushing &&
+                (DateTime.UtcNow - active.LoadingStartedUtc).TotalSeconds > 15 &&
+                (DateTime.Now - lastFlush).TotalMinutes >= 2)
+            {
+                active.LoadingStartedUtc = DateTime.UtcNow;
+                _ = FlushSockets();
+            }
+        };
         zoomPoll.Start();
 
         BuildNav();
@@ -122,6 +136,7 @@ public partial class MainForm : Form
 
         sessionTimer.Tick += (_, _) => SaveSession();
         sessionTimer.Start();
+        driveUploadTimer.Tick += OnDriveUploadTick;
 
         bookmarks.Changed += () => { RebuildBookmarkBar(); if (!applyingRemoteSync && !IsSelfTest && DriveSync.IsConnected(settings)) ScheduleDriveUpload(); };
         if (firstRun)
@@ -154,11 +169,19 @@ public partial class MainForm : Form
                     if (!string.IsNullOrWhiteSpace(t.Url)) AddLazyTab(t.Url, t.Title);
                 if (tabs.Count > 0) restoreActive = Math.Clamp(session.Active, 0, tabs.Count - 1);
             }
-            sessionReady = true;
 
             if (url != null) await CreateTab(url);
             else if (restoreActive >= 0) Activate(tabs[restoreActive]);
             else await CreateTab(settings.HomePage);
+
+            List<string> queued;
+            lock (pendingPipeUrls)
+            {
+                sessionReady = true;
+                queued = new List<string>(pendingPipeUrls);
+                pendingPipeUrls.Clear();
+            }
+            foreach (var queuedUrl in queued) OpenFromOtherInstance(queuedUrl);
 
             // History is wiped on close. Also here, in case the last run didn't close cleanly,
             // and for the engine's own history (visited-link colours), which needs an async call.
@@ -181,9 +204,21 @@ public partial class MainForm : Form
         };
 
         Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
-        FormClosed += (_, _) => Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
-        FormClosed += (_, _) => Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        FormClosed += (_, _) =>
+        {
+            Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+            Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            sleepTimer.Stop(); sleepTimer.Dispose();
+            zoomPoll.Stop(); zoomPoll.Dispose();
+            sessionTimer.Stop(); sessionTimer.Dispose();
+            driveUploadTimer.Stop(); driveUploadTimer.Dispose();
+            history.Dispose();
+            menu.Dispose();
+            tips.Dispose();
+            globe?.Dispose();
+            folderIcon?.Dispose();
+        };
     }
 
     // ---------- Theme (follows Windows light/dark) ----------
@@ -241,13 +276,18 @@ public partial class MainForm : Form
         return b;
     }
 
-    ContextMenuStrip NewMenu() => new()
+    ContextMenuStrip NewMenu()
     {
-        ShowImageMargin = false,
-        Font = menu.Font,
-        Renderer = new ModernRenderer(),
-        Padding = new Padding(0, S(4), 0, S(4))
-    };
+        var cm = new ContextMenuStrip
+        {
+            ShowImageMargin = false,
+            Font = menu.Font,
+            Renderer = new ModernRenderer(),
+            Padding = new Padding(0, S(4), 0, S(4))
+        };
+        cm.Closed += (_, _) => { if (!cm.IsDisposed) BeginInvoke(() => { if (!cm.IsDisposed) cm.Dispose(); }); };
+        return cm;
+    }
 
     // ---------- Custom title bar (tabs live in the caption area) ----------
 
@@ -311,6 +351,9 @@ public partial class MainForm : Form
             // never freeze a page in the middle of a request (see NetRepair.cs): start watching
             // the tab's requests if we weren't yet, and wait while any of them is still loading
             if (!t.NetWatch) { await SetNetWatch(t, true); continue; }
+            var now = DateTime.UtcNow;
+            foreach (var kv in t.InFlight.Where(kv => (now - kv.Value).TotalSeconds > 60).ToList())
+                t.InFlight.Remove(kv.Key);
             if (t.InFlight.Count > 0) continue;
             try { await cw.TrySuspendAsync(); } catch { }
         }
@@ -536,12 +579,30 @@ public partial class MainForm : Form
         data.Save();
     }
 
-    /// <summary>A second Mizar launch (e.g. a link clicked in another app) lands here.</summary>
+    /// <summary>A second Mizar launch (e.g. a link clicked in another app) lands here (thread-safe).</summary>
+    public void EnqueueFromOtherInstance(string url)
+    {
+        try
+        {
+            lock (pendingPipeUrls)
+            {
+                if (!IsHandleCreated || !sessionReady)
+                {
+                    pendingPipeUrls.Enqueue(url);
+                    return;
+                }
+            }
+            if (!IsDisposed) BeginInvoke(() => OpenFromOtherInstance(url));
+        }
+        catch { }
+    }
+
     public void OpenFromOtherInstance(string url)
     {
         // maintenance commands from "Mizar.exe --netdiag/--fixnet": no window activation, no tab
         if (url.StartsWith("mizar-cmd:")) { _ = RunCommand(url["mizar-cmd:".Length..]); return; }
-        if (Native.IsIconic(Handle)) Native.ShowWindow(Handle, 9); // SW_RESTORE
+        if (WindowState == FormWindowState.Minimized)
+            WindowState = lastWindowState == FormWindowState.Minimized ? FormWindowState.Normal : lastWindowState;
         Activate();
         Native.SetForegroundWindow(Handle);
         if (!string.IsNullOrWhiteSpace(url)) _ = CreateTab(url);
@@ -789,6 +850,7 @@ public partial class MainForm : Form
             tab.CertError = false;
             CheckZoom(tab); // record a zoom change made just before leaving the page
             tab.IsLoading = true;
+            tab.LoadingStartedUtc = DateTime.UtcNow;
             TabChanged(tab);
         };
         cw.NavigationCompleted += (_, e) =>
@@ -1258,6 +1320,8 @@ public partial class MainForm : Form
         content.Controls.Remove(tab.View);
         tab.View.Dispose();
         tab.SetFavicon(null, false); // release the tab's own icon
+        tab.Receivers.Clear();
+        tab.InFlight.Clear();
         sessionDirty = true;
 
         if (tabs.Count == 0) { Close(); return; }
@@ -1570,8 +1634,6 @@ public partial class MainForm : Form
     void ScheduleDriveUpload()
     {
         driveUploadTimer.Stop();
-        driveUploadTimer.Tick -= OnDriveUploadTick;
-        driveUploadTimer.Tick += OnDriveUploadTick;
         driveUploadTimer.Start();
     }
 
@@ -1717,9 +1779,11 @@ public partial class MainForm : Form
     void SaveWindow()
     {
         if (fullscreen) return;
+        var effectiveState = WindowState == FormWindowState.Minimized ? lastWindowState : WindowState;
         var r = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
-        settings.WindowBounds = new[] { r.X, r.Y, r.Width, r.Height };
-        settings.Maximized = WindowState == FormWindowState.Maximized;
+        if (r.Width > 300 && r.Height > 200)
+            settings.WindowBounds = new[] { r.X, r.Y, r.Width, r.Height };
+        settings.Maximized = effectiveState == FormWindowState.Maximized;
         settings.Save();
     }
 

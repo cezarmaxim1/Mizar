@@ -289,10 +289,10 @@ public class AddressBox : Control
 
     string? ChipGlyph => security switch
     {
-        SecurityLevel.Secure => "",      // lock
-        SecurityLevel.Insecure => "",    // warning
-        SecurityLevel.CertError => "",
-        SecurityLevel.Internal => "",    // history clock
+        SecurityLevel.Secure => "\uE72E",      // lock
+        SecurityLevel.Insecure => "\uE7BA",    // warning
+        SecurityLevel.CertError => "\uE7BA",
+        SecurityLevel.Internal => "\uE81C",    // history clock
         _ => null
     };
 
@@ -432,7 +432,7 @@ public class ModernRenderer : ToolStripProfessionalRenderer
         var r = new Rectangle(Point.Empty, e.Item.Size);
         using (var bg = new SolidBrush(Theme.Surface)) e.Graphics.FillRectangle(bg, r);
         if (e.Item.Selected || e.Item.Pressed) Highlight(e.Graphics, new Rectangle(0, 1, r.Width, r.Height - 2), e.Item.Pressed);
-        Theme.DrawGlyph(e.Graphics, "", r, Theme.Muted, 8f); // chevron down
+        Theme.DrawGlyph(e.Graphics, "\uE70D", r, Theme.Muted, 8f); // chevron down
     }
 
     protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
@@ -466,13 +466,10 @@ static class Native
     [StructLayout(LayoutKind.Sequential)]
     public struct NCCALCSIZE_PARAMS { public RECT r0, r1, r2; public IntPtr lppos; }
 
-    [DllImport("user32.dll")] public static extern int GetSystemMetricsForDpi(int index, uint dpi);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int value, int size);
     [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] public static extern int SetWindowTheme(IntPtr h, string? app, string? idList);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
-    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool ReleaseCapture();
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
@@ -490,9 +487,6 @@ static class Native
         var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
         return GetMonitorInfo(mon, ref mi) ? mi.rcWork : null;
     }
-
-    public static int FrameY(int dpi) => GetSystemMetricsForDpi(33, (uint)dpi) + GetSystemMetricsForDpi(92, (uint)dpi);
-    public static int FrameX(int dpi) => GetSystemMetricsForDpi(32, (uint)dpi) + GetSystemMetricsForDpi(92, (uint)dpi);
 
     public static void RoundCorners(IntPtr h)
     {
