@@ -13,7 +13,6 @@ public class BrowserTab
     bool ownsFavicon;
     public bool IsLoading { get; set; } = true;
     public DateTime LastActive { get; set; } = DateTime.Now;
-    public DateTime LoadingStartedUtc { get; set; }
     /// <summary>Requests still loading (tracked only while the tab is in the background, see NetRepair.cs).</summary>
     public Dictionary<string, DateTime> InFlight { get; } = new();
     public bool NetWatch { get; set; }

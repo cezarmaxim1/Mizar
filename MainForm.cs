@@ -87,17 +87,7 @@ public partial class MainForm : Form
         };
         sleepTimer.Tick += async (_, _) => await SleepInactiveTabs();
         sleepTimer.Start();
-        zoomPoll.Tick += (_, _) =>
-        {
-            CheckZoom(active);
-            if (active is { IsLoading: true, Core: not null } && !flushing &&
-                (DateTime.UtcNow - active.LoadingStartedUtc).TotalSeconds > 15 &&
-                (DateTime.Now - lastFlush).TotalMinutes >= 2)
-            {
-                active.LoadingStartedUtc = DateTime.UtcNow;
-                _ = FlushSockets();
-            }
-        };
+        zoomPoll.Tick += (_, _) => CheckZoom(active);
         zoomPoll.Start();
 
         BuildNav();
@@ -850,7 +840,6 @@ public partial class MainForm : Form
             tab.CertError = false;
             CheckZoom(tab); // record a zoom change made just before leaving the page
             tab.IsLoading = true;
-            tab.LoadingStartedUtc = DateTime.UtcNow;
             TabChanged(tab);
         };
         cw.NavigationCompleted += (_, e) =>
