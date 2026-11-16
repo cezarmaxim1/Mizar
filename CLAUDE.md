@@ -161,6 +161,17 @@ Baseline measured on 2026-11-13, with one Google tab: about 400 MB of WebView2 p
 - **Indicator:** `zoomChip` (a `TextChip`) next to the star shows "125%" when zoom isn't 100%. Clicking it opens bigger / smaller / back to 100%. Zoom steps follow Chrome's levels (`ZoomLevels`).
 - **Test:** `--selftest <url> <out> --zoom`. Verified on 2026-11-14 on reddit.com: saved at 125%, other site at 100%, back on reddit at 125%.
 
+## Two monitors and scaling (DPI)
+
+The owner uses two monitors with **different scaling**: the primary 2560x1600 at 150% (DPI 144) and a 1920x1200 one above it at 100% (DPI 96). The app is `PerMonitorV2`.
+
+- **Sizes and fonts follow the monitor the window is on.** `MainForm.ApplyDpi()` runs on `OnDpiChanged` (through `BeginInvoke`, after WinForms' own rescaling) and at `Shown`; it re-applies every `S(...)` size, the fonts, the bookmark bar and the menu, and sets `Theme.Dpi`. Before 2026-11-16 the sizes were fixed at the scaling Mizar started with, so on the other monitor the bars were 54 px instead of 36 (or the reverse).
+- **Never write `new Font("Segoe UI", 9f)`.** A point-sized font is sized for the primary monitor's scaling and stays that size everywhere. Use `Theme.UiFont(pt, DeviceDpi)` (pixel-sized, cached); icon glyphs go through `Theme.DrawGlyph`, which uses `Theme.Dpi`. When adding a sized control or a font, add it to `ApplyDpi()` too.
+- **Client area of a maximized window:** see known issue 3 (`RecalcFrame`, `EnsureClientOnScreen`).
+- **Tests** (both need the two monitors connected):
+  - `--selftest <url> <out> --monitortest`: on each monitor, expected vs actual bar heights and font heights; then the forced "content on the wrong monitor" state and its repair.
+  - `powershell -ExecutionPolicy Bypass -File tests\two-monitors.ps1 -Exe <Mizar.exe> -Tag x`: 12 scenarios on an isolated copy (start maximized on the second monitor, restore, maximize, minimize, move a maximized window to the other monitor and back, F11 on each, normal window on the second and across both). Each checks that the client area is where it should be and that the empty tab strip still hit-tests as caption. Verified on 2026-11-16: 12 of 12, and screenshots on both monitors from both start positions.
+
 ## Dark mode
 
 - **Detection:** `Theme.Dark` reads `HKCU\...\Themes\Personalize\AppsUseLightTheme`.

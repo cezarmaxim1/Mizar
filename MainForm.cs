@@ -50,7 +50,8 @@ public partial class MainForm : Form
         thirdPartyBlockedAtStart = settings.BlockThirdPartyCookies;
         Text = "Mizar";
         BackColor = Color.White;
-        Font = new Font("Segoe UI", 9f);
+        Theme.Dpi = appliedDpi = DeviceDpi;
+        Font = Theme.UiFont(9f, DeviceDpi);
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
         MinimumSize = new Size(S(520), S(360));
         Size = new Size(S(1280), S(820));
@@ -138,6 +139,7 @@ public partial class MainForm : Form
 
         Shown += async (_, _) =>
         {
+            ApplyDpi();
             var url = startArgs.FirstOrDefault(a => !a.StartsWith('-'));
             if (IsSelfTest)
             {
@@ -289,6 +291,53 @@ public partial class MainForm : Form
     }
 
     Native.RECT? testWrongWorkArea;
+    int appliedDpi;
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        if (IsHandleCreated) BeginInvoke(ApplyDpi); // after WinForms has finished its own rescaling
+    }
+
+    /// <summary>
+    /// Re-applies every size and font for the monitor the window is on now. The owner's two monitors
+    /// are 100% and 150%; before this, sizes were fixed at the scaling Mizar started with, so on the
+    /// other monitor the bars were 1.5x too tall (or too small) and the text didn't match them.
+    /// </summary>
+    void ApplyDpi()
+    {
+        if (IsDisposed || DeviceDpi == appliedDpi) return;
+        DiagLog.Write($"dpi {appliedDpi} -> {DeviceDpi}");
+        Theme.Dpi = appliedDpi = DeviceDpi;
+        SuspendLayout();
+        Font = Theme.UiFont(9f, DeviceDpi);
+        MinimumSize = new Size(S(520), S(360));
+        tabStrip.Font = Theme.UiFont(9f, DeviceDpi);
+        tabStrip.Height = S(36);
+        nav.Height = S(38);
+        nav.Padding = new Padding(S(8), S(3), S(8), S(3));
+        foreach (var b in nav.Controls.OfType<RoundButton>())
+        {
+            b.Size = new Size(S(32), S(30));
+            b.Margin = new Padding(S(1), 0, S(1), 0);
+        }
+        addressBox.Box.Font = Theme.UiFont(10f, DeviceDpi);
+        addressBox.Height = S(30);
+        addressBox.Margin = new Padding(S(8), 0, S(6), 0);
+        addressBox.PerformLayout();
+        zoomChip.Height = S(30);
+        zoomChip.Margin = new Padding(0, 0, S(2), 0);
+        zoomChip.FitWidth();
+        bar.Font = Theme.UiFont(9f, DeviceDpi);
+        bar.Padding = new Padding(S(8), 0, S(8), S(2));
+        bar.ImageScalingSize = new Size(S(16), S(16));
+        menu.Font = Theme.UiFont(9.5f, DeviceDpi);
+        menu.Padding = new Padding(0, S(4), 0, S(4));
+        RebuildBookmarkBar();
+        HideSuggestions();
+        ResumeLayout(true);
+        Invalidate(true);
+    }
 
     void RecalcFrame() =>
         Native.SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0001 | 0x0004 | 0x0010); // FRAMECHANGED, nothing else
@@ -544,7 +593,7 @@ public partial class MainForm : Form
 
     void BuildMenu()
     {
-        menu.Font = new Font("Segoe UI", 9.5f);
+        menu.Font = Theme.UiFont(9.5f, DeviceDpi);
         menu.ShowImageMargin = false;
         menu.Renderer = new ModernRenderer();
         menu.Padding = new Padding(0, S(4), 0, S(4));
@@ -668,7 +717,7 @@ public partial class MainForm : Form
         bar.Padding = new Padding(S(8), 0, S(8), S(2));
         bar.Margin = Padding.Empty;
         bar.ImageScalingSize = new Size(S(16), S(16));
-        bar.Font = new Font("Segoe UI", 9f);
+        bar.Font = Theme.UiFont(9f, DeviceDpi);
         bar.CanOverflow = true;
         bar.ShowItemToolTips = true;
         bar.Visible = settings.ShowBookmarksBar;
@@ -1073,6 +1122,15 @@ public partial class MainForm : Form
         if (startArgs.Contains("--monitortest"))
         {
             // put the content on another monitor on purpose, then check that the self-heal brings it back
+            // sizes must follow each monitor's scaling (the owner's two monitors are 100% and 150%)
+            foreach (var s in Screen.AllScreens)
+            {
+                WindowState = FormWindowState.Normal;
+                Bounds = new Rectangle(s.WorkingArea.X + 100, s.WorkingArea.Y + 100, 1300, 800);
+                WindowState = FormWindowState.Maximized;
+                await Task.Delay(1500);
+                keys += $"monitor: dpi={DeviceDpi} expect strip={S(36)} nav={S(38)} addr={S(30)} | actual strip={tabStrip.Height} nav={nav.Height} addr={addressBox.Height} bar={bar.Height} | font px: form={Font.Height} tabs={tabStrip.Font.Height} address={addressBox.Box.Font.Height} bar={bar.Font.Height} expect={Theme.UiFont(9f, DeviceDpi).Height}\n";
+            }
             var other = Screen.AllScreens.FirstOrDefault(s => !s.Bounds.Contains(PointToScreen(Point.Empty)));
             if (other == null) keys += "monitor: needs two monitors\n";
             else

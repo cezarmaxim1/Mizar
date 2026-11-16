@@ -51,3 +51,4 @@
 | **Change self-update or signing** | `Updater.cs` and `release.ps1` (`MainForm.AutoCheckForUpdates` / `Program.Main`) |
 
 > **Window frame:** `MainForm.WndProc` owns `WM_NCCALCSIZE` (client area = work area when maximized), `RecalcFrame` and `EnsureClientOnScreen` (self-heal after display changes; see known issue 3 in `CLAUDE.md`).
+> **Monitor scaling:** `MainForm.ApplyDpi` + `Theme.UiFont`/`Theme.Dpi` (`ModernUi.cs`); every sized control or font must be re-applied there. Scenario test: `tests/two-monitors.ps1`.

@@ -118,13 +118,28 @@ static class Theme
         return p;
     }
 
-    // Icon fonts are reused: creating a Font on every paint (tabs repaint 20x/s while loading) is wasteful.
-    static readonly Dictionary<float, Font> GlyphFonts = new();
+    /// <summary>DPI of the monitor the main window is on (kept current by MainForm.ApplyDpi).</summary>
+    public static int Dpi = 96;
+
+    // Fonts are reused: creating a Font on every paint (tabs repaint 20x/s while loading) is wasteful.
+    static readonly Dictionary<(string, float, int), Font> Fonts = new();
+
+    /// <summary>
+    /// A font of <paramref name="pt"/> points as it should look on a monitor with the given DPI.
+    /// A plain "new Font(name, 9f)" is sized for the PRIMARY monitor's scaling and stays that size on
+    /// every monitor, so on a 100% monitor next to a 150% one the text came out 1.5x too big.
+    /// Sizing in pixels makes it exact everywhere.
+    /// </summary>
+    public static Font UiFont(float pt, int dpi, string family = "Segoe UI")
+    {
+        var key = (family, pt, dpi);
+        if (!Fonts.TryGetValue(key, out var f)) Fonts[key] = f = new Font(family, pt * dpi / 72f, GraphicsUnit.Pixel);
+        return f;
+    }
 
     public static void DrawGlyph(Graphics g, string glyph, Rectangle r, Color c, float size)
     {
-        if (!GlyphFonts.TryGetValue(size, out var f)) GlyphFonts[size] = f = new Font(IconFont, size);
-        TextRenderer.DrawText(g, glyph, f, r, c,
+        TextRenderer.DrawText(g, glyph, UiFont(size, Dpi, IconFont), r, c,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
     }
 }
@@ -203,7 +218,7 @@ public class RoundButton : Control
 public class TextChip : Control
 {
     bool hover, down;
-    static readonly Font ChipFont = new("Segoe UI Semibold", 9f);
+    Font ChipFont => Theme.UiFont(9f, DeviceDpi, "Segoe UI Semibold");
 
     public TextChip()
     {
@@ -216,6 +231,12 @@ public class TextChip : Control
     protected override void OnTextChanged(EventArgs e)
     {
         base.OnTextChanged(e);
+        FitWidth();
+    }
+
+    /// <summary>Width follows the text; called again when the monitor scaling changes.</summary>
+    public void FitWidth()
+    {
         int k(int v) => (int)Math.Round(v * DeviceDpi / 96f);
         Width = TextRenderer.MeasureText(Text, ChipFont).Width + k(18);
         Invalidate();
@@ -250,7 +271,7 @@ public class AddressBox : Control
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer |
                  ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Surface;
-        Box.Font = new Font("Segoe UI", 10f);
+        Box.Font = Theme.UiFont(10f, DeviceDpi);
         Controls.Add(Box);
         Box.GotFocus += (_, _) => { focused = true; ApplyTheme(); };
         Box.LostFocus += (_, _) => { focused = false; ApplyTheme(); };
@@ -278,7 +299,7 @@ public class AddressBox : Control
     }
 
     int P(float v) => (int)Math.Round(v * DeviceDpi / 96f);
-    static readonly Font ChipFont = new("Segoe UI Semibold", 9f);
+    Font ChipFont => Theme.UiFont(9f, DeviceDpi, "Segoe UI Semibold");
 
     string? ChipText => security switch
     {

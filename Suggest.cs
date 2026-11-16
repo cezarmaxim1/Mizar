@@ -13,8 +13,8 @@ public class SuggestBox : Control
 {
     readonly List<Suggestion> items = new();
     int selected = -1, hover = -1;
-    static readonly Font TitleFont = new("Segoe UI", 11f);
-    static readonly Font UrlFont = new("Segoe UI", 10f);
+    Font TitleFont => Theme.UiFont(11f, DeviceDpi);
+    Font UrlFont => Theme.UiFont(10f, DeviceDpi);
 
     public event Action<Suggestion>? Picked;
 

@@ -84,7 +84,7 @@ public class TabStrip : Control
         SetStyle(ControlStyles.ResizeRedraw | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint |
                  ControlStyles.OptimizedDoubleBuffer, true);
         BackColor = Theme.Strip;
-        Font = new Font("Segoe UI", 9f);
+        Font = Theme.UiFont(9f, DeviceDpi);
         timer.Tick += (_, _) =>
         {
             if (Tabs.Any(t => t.IsLoading)) { spin = (spin + 30) % 360; Invalidate(); }
