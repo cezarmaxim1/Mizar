@@ -288,6 +288,29 @@ public partial class MainForm : Form
         Native.SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0001 | 0x0004); // FRAMECHANGED|NOMOVE|NOSIZE|NOZORDER
     }
 
+    Native.RECT? testWrongWorkArea;
+
+    void RecalcFrame() =>
+        Native.SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0001 | 0x0004 | 0x0010); // FRAMECHANGED, nothing else
+
+    /// <summary>
+    /// The client area must lie inside the window. On 2026-11-16, after the displays changed while
+    /// Mizar was maximized, the window was on one monitor and its whole content on the other, so the
+    /// window looked alive but ignored every click. Checked when the displays change, when the laptop
+    /// wakes and whenever the window is activated; a mismatch is logged and repaired.
+    /// </summary>
+    bool EnsureClientOnScreen(string why)
+    {
+        if (!IsHandleCreated || IsDisposed || WindowState == FormWindowState.Minimized) return true;
+        if (!Native.GetWindowRect(Handle, out var w)) return true;
+        var c = PointToScreen(Point.Empty);
+        bool ok = c.X >= w.Left - 2 && c.X <= w.Right && c.Y >= w.Top - 2 && c.Y <= w.Bottom;
+        if (ok) return true;
+        DiagLog.Write($"client area off-window ({why}): window {w.Left},{w.Top} client {c.X},{c.Y} -> recalculated");
+        RecalcFrame();
+        return false;
+    }
+
     protected override void WndProc(ref Message m)
     {
         if (m.Msg == Native.WM_NCCALCSIZE && m.WParam != IntPtr.Zero && FormBorderStyle != FormBorderStyle.None)
@@ -298,13 +321,33 @@ public partial class MainForm : Form
             var after = System.Runtime.InteropServices.Marshal.PtrToStructure<Native.NCCALCSIZE_PARAMS>(m.LParam);
             // Remove the caption. When maximized, Windows places the window partly off-screen,
             // so pin the client area exactly to the monitor's work area (nothing gets cut off).
-            if (Native.IsZoomed(Handle) && Native.WorkArea(Handle) is { } work)
+            // The monitor is taken from the NEW window rectangle, not from the window: when Windows
+            // moves a maximized window to another monitor (a display was unplugged or went to sleep),
+            // the window still "is" on the old one while this message is handled. Using the old
+            // monitor left the whole client area on the other screen: the window looked fine but
+            // every click fell on an empty frame (2026-11-16).
+            if (Native.IsZoomed(Handle) && Native.WorkArea(before.r0) is { } work)
             {
-                after.r0 = work;
+                after.r0 = testWrongWorkArea ?? work;
             }
             else after.r0.Top = top;
             System.Runtime.InteropServices.Marshal.StructureToPtr(after, m.LParam, false);
             m.Result = IntPtr.Zero;
+            return;
+        }
+        if (m.Msg == Native.WM_DISPLAYCHANGE || (m.Msg == Native.WM_SETTINGCHANGE && (int)m.WParam == Native.SPI_SETWORKAREA))
+        {
+            // monitors or the taskbar changed: have the client area recalculated once things settle
+            base.WndProc(ref m);
+            DiagLog.Write(m.Msg == Native.WM_DISPLAYCHANGE ? "display change" : "work area change");
+            if (IsHandleCreated) BeginInvoke(() => { RecalcFrame(); EnsureClientOnScreen("display change"); });
+            return;
+        }
+        if (m.Msg == Native.WM_ACTIVATE && (int)m.WParam != 0)
+        {
+            // self-heal: the user clicked a window whose content sits somewhere else
+            base.WndProc(ref m);
+            if (IsHandleCreated) BeginInvoke(() => EnsureClientOnScreen("activate"));
             return;
         }
         if (m.Msg == Native.WM_NCHITTEST && FormBorderStyle != FormBorderStyle.None)
@@ -1027,6 +1070,25 @@ public partial class MainForm : Form
         await Task.WhenAny(done.Task, Task.Delay(30000));
         await Task.Delay(8000);
         string keys = "";
+        if (startArgs.Contains("--monitortest"))
+        {
+            // put the content on another monitor on purpose, then check that the self-heal brings it back
+            var other = Screen.AllScreens.FirstOrDefault(s => !s.Bounds.Contains(PointToScreen(Point.Empty)));
+            if (other == null) keys += "monitor: needs two monitors\n";
+            else
+            {
+                var wa = other.WorkingArea;
+                testWrongWorkArea = new Native.RECT { Left = wa.Left, Top = wa.Top, Right = wa.Right, Bottom = wa.Bottom };
+                RecalcFrame();
+                await Task.Delay(500);
+                testWrongWorkArea = null;
+                var broken = PointToScreen(Point.Empty);
+                bool wasOk = EnsureClientOnScreen("test");
+                await Task.Delay(500);
+                var healed = PointToScreen(Point.Empty);
+                keys += $"monitor: broken client at {broken.X},{broken.Y} detected={!wasOk} | healed client at {healed.X},{healed.Y} ok={EnsureClientOnScreen("test2")}\n";
+            }
+        }
         if (startArgs.Contains("--repairtest"))
         {
             // the page gets a service worker; "Repară conexiunea" must remove it and reload the page

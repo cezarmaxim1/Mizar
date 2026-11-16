@@ -49,3 +49,5 @@
 | **Debug stalled pages / network hangs** | `diag.log` first; then `NetRepair.cs` (`RepairConnection`, `ResetServiceWorkers`, `PageProbe`, `LogSlowLoad`, `WireNetWatch`, `FlushSockets`, `RunNetDiag`) |
 | **Change bookmark / Drive sync behavior** | Data & cache in `BookmarkStore` (`Storage.cs`), tree UI in `BookmarkManagerForm` (`Dialogs.cs`), OAuth/REST v3 in `DriveSync.cs`, triggers in `MainForm.cs` |
 | **Change self-update or signing** | `Updater.cs` and `release.ps1` (`MainForm.AutoCheckForUpdates` / `Program.Main`) |
+
+> **Window frame:** `MainForm.WndProc` owns `WM_NCCALCSIZE` (client area = work area when maximized), `RecalcFrame` and `EnsureClientOnScreen` (self-heal after display changes; see known issue 3 in `CLAUDE.md`).

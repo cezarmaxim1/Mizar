@@ -458,6 +458,9 @@ public class ModernRenderer : ToolStripProfessionalRenderer
 static class Native
 {
     public const int WM_NCCALCSIZE = 0x0083, WM_NCHITTEST = 0x0084;
+    public const int WM_ACTIVATE = 0x0006;
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    public const int WM_DISPLAYCHANGE = 0x007E, WM_SETTINGCHANGE = 0x001A, SPI_SETWORKAREA = 0x002F;
     public const int HTCLIENT = 1, HTCAPTION = 2, HTTRANSPARENT = -1, HTTOP = 12, HTTOPLEFT = 13, HTTOPRIGHT = 14;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -484,6 +487,16 @@ static class Native
     public static RECT? WorkArea(IntPtr hwnd)
     {
         var mon = MonitorFromWindow(hwnd, 2); // MONITOR_DEFAULTTONEAREST
+        var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+        return GetMonitorInfo(mon, ref mi) ? mi.rcWork : null;
+    }
+
+    [DllImport("user32.dll")] public static extern IntPtr MonitorFromRect(ref RECT r, uint flags);
+
+    /// <summary>Work area of the monitor that holds most of the given screen rectangle.</summary>
+    public static RECT? WorkArea(RECT windowRect)
+    {
+        var mon = MonitorFromRect(ref windowRect, 2); // MONITOR_DEFAULTTONEAREST
         var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
         return GetMonitorInfo(mon, ref mi) ? mi.rcWork : null;
     }

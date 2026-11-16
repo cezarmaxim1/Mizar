@@ -219,6 +219,7 @@ public partial class MainForm
     {
         if (e.Mode != Microsoft.Win32.PowerModes.Resume) return;
         DiagLog.Write("power resume");
+        try { BeginInvoke(() => { RecalcFrame(); EnsureClientOnScreen("power resume"); }); } catch { }
         try
         {
             BeginInvoke(async () =>
