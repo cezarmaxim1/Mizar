@@ -1147,6 +1147,19 @@ public partial class MainForm : Form
                 keys += $"monitor: broken client at {broken.X},{broken.Y} detected={!wasOk} | healed client at {healed.X},{healed.Y} ok={EnsureClientOnScreen("test2")}\n";
             }
         }
+        if (startArgs.Contains("--healtest"))
+        {
+            // the page registers a worker that never answers image requests (a wedged worker);
+            // the slow-load check must notice it, remove the worker and reload, and the images must load
+            const string img = "(() => { const i=[...document.images]; return 'img=' + i.length + ' pending=' + i.filter(x=>!x.complete).length + ' sw=' + (navigator.serviceWorker.controller ? 'yes' : 'no'); })()";
+            await cw.ExecuteScriptAsync("navigator.serviceWorker.register('/stuck-sw.js')");
+            await Task.Delay(2000);
+            cw.Reload();   // now controlled: every image hangs
+            await Task.Delay(4000);
+            keys += $"heal: stuck -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(img))}\n";
+            await Task.Delay(14000); // slow-load check (6 s in this test) + heal + reload
+            keys += $"heal: after -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(img))}\n";
+        }
         if (startArgs.Contains("--repairtest"))
         {
             // the page gets a service worker; "Repară conexiunea" must remove it and reload the page

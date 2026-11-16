@@ -203,15 +203,55 @@ public partial class MainForm
     async void LogSlowLoad(BrowserTab? tab)
     {
         if (tab?.Core == null || !tab.IsLoading || tab.SlowLogged) return;
-        if ((DateTime.Now - tab.LoadStarted).TotalSeconds < 20) return;
+        if ((DateTime.Now - tab.LoadStarted).TotalSeconds < SlowLoadSeconds) return;
         tab.SlowLogged = true;
         try
         {
+            var cw = tab.Core;
             var host = Bookmark.HostOf(tab.Url);
-            var probe = await PageProbe(tab.Core);
-            DiagLog.Write($"slow load {host}: 20 s [{probe}] tabs={tabs.Count} asleep={tabs.Count(t => t.Core?.IsSuspended == true)}");
+            var probe = await PageProbe(cw);
+            DiagLog.Write($"slow load {host}: {SlowLoadSeconds} s [{probe}] tabs={tabs.Count} asleep={tabs.Count(t => t.Core?.IsSuspended == true)}");
+            if (WedgedWorker(probe)) await HealWedgedWorker(tab, cw, host);
         }
         catch { }
+    }
+
+    int SlowLoadSeconds => startArgs.Contains("--healtest") ? 6 : 20;
+    readonly Dictionary<string, DateTime> lastHeal = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The 2026-11-14/15/16 Gmail stall, as the page probe sees it: a service worker controls the page
+    /// and (nearly) none of its images has loaded. Seen as img=99/99 and img=132/132 pending, sw=activated.
+    /// </summary>
+    static bool WedgedWorker(string probe)
+    {
+        static int Num(string p, string key)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(p, @"\b" + key + @"=(\d+)");
+            return m.Success ? int.Parse(m.Groups[1].Value) : -1;
+        }
+        int img = Num(probe, "img"), pending = Num(probe, "imgPending");
+        return probe.Contains("sw=activated") && img >= 5 && pending >= img * 0.8;
+    }
+
+    /// <summary>
+    /// Automatic version of what fixed it by hand: remove the site's service worker and reload that one
+    /// page. No socket flush, so downloads and other tabs are untouched. At most once per 5 minutes per
+    /// site; the page may still show its own "Reload site?" prompt (Gmail does).
+    /// </summary>
+    async Task HealWedgedWorker(BrowserTab tab, CoreWebView2 cw, string host)
+    {
+        if (lastHeal.TryGetValue(host, out var t) && DateTime.Now - t < TimeSpan.FromMinutes(5))
+        {
+            DiagLog.Write($"heal {host}: skipped (healed {(DateTime.Now - t).TotalSeconds:0} s ago)");
+            return;
+        }
+        lastHeal[host] = DateTime.Now;
+        var sw = await ResetServiceWorkers(cw);
+        DiagLog.Write($"heal {host}: service worker reset={sw}, reloading");
+        if (sw != "ok") return;
+        try { cw.Reload(); } catch { }
+        _ = LogAfterRepair(cw, host);
     }
 
     /// <summary>After the laptop wakes up, old connections are often dead: start with fresh ones.</summary>
