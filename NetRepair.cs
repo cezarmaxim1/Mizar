@@ -125,6 +125,7 @@ public partial class MainForm
         var cw = active?.Core;
         var host = cw == null ? "?" : Bookmark.HostOf(cw.Source);
         var before = cw == null ? "" : await PageProbe(cw);
+        if (cw != null && before.Contains("sw=activated")) await BlackBox(cw, host);
         var flush = await FlushSockets();
         var sw = cw == null ? "no page" : await ResetServiceWorkers(cw);
         DiagLog.Write($"repair {host}: before [{before}] flush={flush} sw={sw}");
@@ -247,11 +248,157 @@ public partial class MainForm
             return;
         }
         lastHeal[host] = DateTime.Now;
+        await BlackBox(cw, host); // evidence first: after the reset there is nothing left to look at
         var sw = await ResetServiceWorkers(cw);
         DiagLog.Write($"heal {host}: service worker reset={sw}, reloading");
         if (sw != "ok") return;
         try { cw.Reload(); } catch { }
         _ = LogAfterRepair(cw, host);
+    }
+
+
+    // ---------- Black box: what is the stuck worker doing? ----------
+
+    /// <summary>CDP call that gives up after <paramref name="ms"/> (a wedged target may never answer).</summary>
+    static async Task<string?> Cdp(CoreWebView2 cw, string method, string args, int ms = 4000, string? session = null)
+    {
+        try
+        {
+            var t = session == null ? cw.CallDevToolsProtocolMethodAsync(method, args)
+                                    : cw.CallDevToolsProtocolMethodForSessionAsync(session, method, args);
+            return await Task.WhenAny(t, Task.Delay(ms)) == t ? t.Result : null;
+        }
+        catch (Exception ex) { return "{\"error\":" + JsonSerializer.Serialize(ex.Message) + "}"; }
+    }
+
+    /// <summary>Runs an async JS expression in a page or worker and returns its string result, "TIMEOUT" or the error.</summary>
+    static async Task<string> Eval(CoreWebView2 cw, string expr, string? session = null)
+    {
+        var r = await Cdp(cw, "Runtime.evaluate", JsonSerializer.Serialize(new { expression = expr, awaitPromise = true, returnByValue = true }), 9000, session);
+        if (r == null) return "NO ANSWER (JS thread busy or blocked)";
+        try
+        {
+            using var d = JsonDocument.Parse(r);
+            if (d.RootElement.TryGetProperty("error", out var e)) return "error " + e;
+            if (d.RootElement.TryGetProperty("exceptionDetails", out var x)) return "exception " + (x.TryGetProperty("text", out var tx) ? tx.GetString() : "");
+            return d.RootElement.GetProperty("result").TryGetProperty("value", out var v) ? v.ToString() : "?";
+        }
+        catch { return "unparsable"; }
+    }
+
+    // each step: "ok:<value>", "err:<name>" or "TIMEOUT" after 3 s; never touches page content
+    const string ProbeHelpers =
+        "const T=(f,ms)=>{let p;try{p=f()}catch(e){return Promise.resolve('throw:'+e.name)}" +
+        "return Promise.race([Promise.resolve(p).then(v=>'ok:'+v,e=>'err:'+(e&&e.name)),new Promise(r=>setTimeout(()=>r('TIMEOUT'),ms||3000))])};";
+
+    const string PageBox = "(async()=>{" + ProbeHelpers +
+        "const o={};" +
+        "o.fetchViaWorker=await T(()=>fetch(location.origin+'/favicon.ico?mz='+Date.now(),{cache:'no-store'}).then(r=>r.status));" +
+        "const pi=[...document.images].find(i=>!i.complete&&/^https?:/.test(i.src));" +
+        "o.stuckImageRefetch=pi?await T(()=>fetch(pi.src,{mode:'no-cors'}).then(r=>r.type)):'none';" +
+        "o.caches=await T(()=>caches.keys().then(k=>k.length));" +
+        "o.cacheOpen=await T(()=>caches.open('mizar-probe').then(()=>caches.delete('mizar-probe')));" +
+        "o.idb=await T(()=>indexedDB.databases().then(d=>d.length));" +
+        "o.storage=await T(()=>navigator.storage.estimate().then(e=>Math.round(e.usage/1048576)+'MB'));" +
+        "o.regs=await T(()=>navigator.serviceWorker.getRegistrations().then(r=>r.map(x=>(x.active?'A:'+x.active.state:'')+(x.waiting?' W':'')+(x.installing?' I':'')).join('|')));" +
+        "const c=navigator.serviceWorker.controller;o.controller=c?c.state:'none';" +
+        "return JSON.stringify(o)})()";
+
+    const string PageFetchOnly = "(async()=>{" + ProbeHelpers +
+        "const a=await T(()=>fetch(location.origin+'/favicon.ico?mz='+Date.now(),{cache:'no-store'}).then(r=>r.status));" +
+        "const pi=[...document.images].find(i=>!i.complete&&/^https?:/.test(i.src));" +
+        "const b=pi?await T(()=>fetch(pi.src,{mode:'no-cors'}).then(r=>r.type)):'none';" +
+        "return 'favicon='+a+' stuckImage='+b})()";
+
+    const string WorkerBox = "(async()=>{" + ProbeHelpers +
+        "const o={};" +
+        "o.state=self.serviceWorker?self.serviceWorker.state:(self.registration&&self.registration.active?self.registration.active.state:'?');" +
+        "o.caches=await T(()=>caches.keys().then(k=>k.length));" +
+        "o.idb=await T(()=>indexedDB.databases().then(d=>d.length));" +
+        "o.clients=await T(()=>self.clients.matchAll({includeUncontrolled:true}).then(c=>c.length));" +
+        "o.fetch=await T(()=>fetch(self.location.origin+'/favicon.ico?mzw='+Date.now(),{cache:'no-store'}).then(r=>r.status));" +
+        "return JSON.stringify(o)})()";
+
+    /// <summary>
+    /// Recorded in diag.log just before a stuck page is repaired, so every stall leaves evidence of
+    /// WHERE it hangs: (1) the page's own view: does a fetch through the worker answer, do Cache Storage
+    /// and IndexedDB answer; (2) the same fetch with the worker bypassed: if that one works, the network
+    /// is fine and the worker is the blocker; (3) the engine's view of the worker (status, running
+    /// status, reported errors); (4) inside the worker: is its JS thread alive, and do storage and
+    /// network answer from there. Hosts and states only; takes up to ~25 s when things hang.
+    /// </summary>
+    async Task BlackBox(CoreWebView2 cw, string host)
+    {
+        try
+        {
+            DiagLog.Write($"blackbox {host} page: {await Eval(cw, PageBox)}");
+
+            await Cdp(cw, "Network.enable", "{}");
+            await Cdp(cw, "Network.setBypassServiceWorker", "{\"bypass\":true}");
+            DiagLog.Write($"blackbox {host} fetch bypassing worker: {await Eval(cw, PageFetchOnly)}");
+            await Cdp(cw, "Network.setBypassServiceWorker", "{\"bypass\":false}");
+            if (active?.Core == cw) await Cdp(cw, "Network.disable", "{}"); // background tabs keep their watch
+
+            // the engine's view: versions and errors arrive as events once the domain is enabled
+            var versions = new List<string>(); var errors = new List<string>();
+            var rv = cw.GetDevToolsProtocolEventReceiver("ServiceWorker.workerVersionUpdated");
+            var re = cw.GetDevToolsProtocolEventReceiver("ServiceWorker.workerErrorReported");
+            void OnV(object? s, CoreWebView2DevToolsProtocolEventReceivedEventArgs e)
+            {
+                try
+                {
+                    using var d = JsonDocument.Parse(e.ParameterObjectAsJson);
+                    foreach (var v in d.RootElement.GetProperty("versions").EnumerateArray())
+                    {
+                        var url = v.TryGetProperty("scriptURL", out var u) ? u.GetString() ?? "" : "";
+                        if (!url.Contains(host, StringComparison.OrdinalIgnoreCase)) continue;
+                        string G(string k) => v.TryGetProperty(k, out var p) ? p.ToString() : "?";
+                        versions.Add($"status={G("status")} running={G("runningStatus")} clients={(v.TryGetProperty("controlledClients", out var cc) ? cc.GetArrayLength() : 0)}");
+                    }
+                }
+                catch { }
+            }
+            void OnE(object? s, CoreWebView2DevToolsProtocolEventReceivedEventArgs e)
+            {
+                try
+                {
+                    using var d = JsonDocument.Parse(e.ParameterObjectAsJson);
+                    var m = d.RootElement.GetProperty("errorMessage").GetProperty("errorMessage").GetString() ?? "";
+                    errors.Add(m.Length > 160 ? m[..160] : m);
+                }
+                catch { }
+            }
+            rv.DevToolsProtocolEventReceived += OnV; re.DevToolsProtocolEventReceived += OnE;
+            await Cdp(cw, "ServiceWorker.enable", "{}");
+            await Task.Delay(800);
+            await Cdp(cw, "ServiceWorker.disable", "{}");
+            rv.DevToolsProtocolEventReceived -= OnV; re.DevToolsProtocolEventReceived -= OnE;
+            DiagLog.Write($"blackbox {host} engine: {(versions.Count == 0 ? "no worker version reported" : string.Join(" ; ", versions.Distinct()))}" +
+                          (errors.Count > 0 ? " errors: " + string.Join(" | ", errors.Distinct().Take(5)) : ""));
+
+            // inside the worker
+            var targets = await Cdp(cw, "Target.getTargets", "{}");
+            string? targetId = null;
+            if (targets != null)
+            {
+                using var d = JsonDocument.Parse(targets);
+                if (d.RootElement.TryGetProperty("targetInfos", out var infos))
+                    foreach (var t in infos.EnumerateArray())
+                        if (t.GetProperty("type").GetString() == "service_worker" &&
+                            (t.GetProperty("url").GetString() ?? "").Contains("://" + host, StringComparison.OrdinalIgnoreCase))
+                        { targetId = t.GetProperty("targetId").GetString(); break; }
+            }
+            if (targetId == null) { DiagLog.Write($"blackbox {host} worker: no worker target (not running)"); return; }
+            var att = await Cdp(cw, "Target.attachToTarget", JsonSerializer.Serialize(new { targetId, flatten = true }));
+            string? session = null;
+            if (att != null) { using var d = JsonDocument.Parse(att); if (d.RootElement.TryGetProperty("sessionId", out var sid)) session = sid.GetString(); }
+            if (session == null) { DiagLog.Write($"blackbox {host} worker: could not attach"); return; }
+            var alive = await Eval(cw, "String(1+1)", session);
+            var inside = alive == "2" ? await Eval(cw, WorkerBox, session) : "(skipped)";
+            DiagLog.Write($"blackbox {host} worker: jsThread={(alive == "2" ? "alive" : alive)} inside={inside}");
+            await Cdp(cw, "Target.detachFromTarget", JsonSerializer.Serialize(new { sessionId = session }), 2000);
+        }
+        catch (Exception ex) { DiagLog.Write($"blackbox {host}: failed {ex.Message}"); }
     }
 
     /// <summary>After the laptop wakes up, old connections are often dead: start with fresh ones.</summary>

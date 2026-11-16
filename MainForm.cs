@@ -1157,7 +1157,7 @@ public partial class MainForm : Form
             cw.Reload();   // now controlled: every image hangs
             await Task.Delay(4000);
             keys += $"heal: stuck -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(img))}\n";
-            await Task.Delay(14000); // slow-load check (6 s in this test) + heal + reload
+            await Task.Delay(40000); // slow-load check (6 s in this test) + black box + heal + reload
             keys += $"heal: after -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(img))}\n";
         }
         if (startArgs.Contains("--repairtest"))
