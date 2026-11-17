@@ -50,6 +50,7 @@ For modules, data flow and design decisions, read `ARCHITECTURE.md`. For what's 
     | `--updatetest` | update check and staging; `MIZAR_UPDATE_URL` points it at a fake API |
     | `--monitortest` | DPI and wrong-monitor repair; needs 2 monitors |
     | `--scheme light\|dark\|auto` | page colour scheme |
+    | `--cookietest` | writes a `cookies test google:` line to `diag.log` |
 
   - These need a local page served with `python -m http.server`:
 

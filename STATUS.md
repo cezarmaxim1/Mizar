@@ -90,6 +90,19 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
 
 ## Known bugs and loose ends
 
+- **Signed out of Google at every restart** (since 2026-11-16, Google only; other sites stay signed in; the account chooser is empty too, so every Google cookie is gone).
+  - Facts so far: no Mizar code deletes cookies (only the Settings buttons); the profile's `Cookies` file is saved normally.
+  - Suspect, unproven: third-party cookie blocking, turned back on 2026-11-16 17:26.
+  - **Evidence being collected (from 2026-11-17):** `LogGoogleCookies` in `MainForm.cs` writes `cookies <when> google: N [domain/name:expiry|s]` (no values) to `diag.log`:
+    - `<when>` is `start`, `after history wipe` (the startup `ClearData`), or `close`;
+    - `s` marks a session cookie.
+  - **How to read it, comparing the last `close` with the next `start`:**
+    - sign-in cookies (`SID`, `HSID`, `SSID`, `__Secure-1PSID`, `LSID`…) shown as `s` at close → they expire by design; find why Google sets them that way;
+    - dated at close but missing at start → something removes them on shutdown or startup;
+    - present at `start` but gone `after history wipe` → `ClearData` is the cause.
+  - Verified on an isolated profile: the lines are written and closing still works.
+  - Fallback experiment for the owner: turn cookie blocking off, sign in, restart twice.
+
 - **Wrong URL in the address bar:** it once showed a Facebook URL while the Gmail tab was active. Not reproduced, not investigated.
 - **English buttons:** the Yes/No buttons in `MessageBox` dialogs are in English (system strings).
 - **Signing key backup:** the owner should keep a copy of `%USERPROFILE%\.mizar-release\` somewhere safe.

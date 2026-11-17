@@ -180,18 +180,30 @@ public partial class MainForm : Form
 
             // History is wiped on close. Also here, in case the last run didn't close cleanly,
             // and for the engine's own history (visited-link colours), which needs an async call.
+            await LogGoogleCookies("start");
             if (settings.ClearHistoryOnExit)
+            {
                 await ClearData(CoreWebView2BrowsingDataKinds.BrowsingHistory | CoreWebView2BrowsingDataKinds.DownloadHistory);
+                await LogGoogleCookies("after history wipe");
+            }
 
             if (!File.Exists(OperaFavicons.Marker)) await ImportOperaFavicons();
             if (firstRun) _ = PrefetchFavicons();
             if (DriveSync.IsConnected(settings)) _ = SyncBookmarksAsync(silent: true);
             _ = AutoCheckForUpdates();
         };
-        // self-tests must never touch the owner's settings, history or session
-        FormClosing += (_, _) =>
+        FormClosing += async (_, e) =>
         {
-            if (IsSelfTest) return;
+            if (cookiesLoggedAtClose) return;
+            cookiesLoggedAtClose = true;
+            e.Cancel = true;
+            await LogGoogleCookies("close");
+            BeginInvoke(Close);
+        };
+        // self-tests must never touch the owner's settings, history or session
+        FormClosing += (_, e) =>
+        {
+            if (e.Cancel || IsSelfTest) return;
             SaveWindow();
             if (settings.ClearHistoryOnExit) history.Clear(); else history.Flush();
             sessionDirty = true;
@@ -919,6 +931,33 @@ public partial class MainForm : Form
         UpdateNav();
     }
 
+    bool cookiesLoggedAtClose;
+
+    /// <summary>
+    /// Since 2026-11-16 the owner is signed out of Google at every restart (other sites stay signed
+    /// in). One diag.log line per call: the Google cookies the engine has for Gmail and the sign-in
+    /// page, as domain/name and s (session) or expiry date. Never values. Compare "close" with the
+    /// next "start" to see whether they expire by design or get removed.
+    /// </summary>
+    async Task LogGoogleCookies(string when)
+    {
+        try
+        {
+            var cw = active?.Core ?? tabs.Select(t => t.Core).FirstOrDefault(c => c != null);
+            if (cw == null) { DiagLog.Write($"cookies {when} google: no engine"); return; }
+            var seen = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var url in new[] { "https://mail.google.com/mail/", "https://accounts.google.com/" })
+            {
+                var t = cw.CookieManager.GetCookiesAsync(url);
+                if (await Task.WhenAny(t, Task.Delay(3000)) != t) { DiagLog.Write($"cookies {when} google: TIMEOUT"); return; }
+                foreach (var c in t.Result)
+                    seen.Add($"{c.Domain}{c.Path.TrimEnd('/')}/{c.Name}:{(c.IsSession ? "s" : c.Expires.ToString("yyyy-MM-dd"))}");
+            }
+            DiagLog.Write($"cookies {when} google: {seen.Count} [{string.Join(' ', seen)}]");
+        }
+        catch (Exception ex) { DiagLog.Write($"cookies {when} google: failed {ex.Message}"); }
+    }
+
     /// <summary>Starts the engine for a tab and loads its first page. False if the tab is gone or the engine failed.</summary>
     async Task<bool> InitTab(BrowserTab tab, string? url, CoreWebView2NewWindowRequestedEventArgs? nw = null, CoreWebView2Deferral? deferral = null)
     {
@@ -1208,6 +1247,11 @@ public partial class MainForm : Form
             keys += $"heal: stuck -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(img))}\n";
             await Task.Delay(40000); // slow-load check (6 s in this test) + black box + heal + reload
             keys += $"heal: after -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(img))}\n";
+        }
+        if (startArgs.Contains("--cookietest"))
+        {
+            await LogGoogleCookies("test");
+            keys += "cookies: logged to diag.log\n";
         }
         if (startArgs.Contains("--stucktest"))
         {
