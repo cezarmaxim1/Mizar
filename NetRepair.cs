@@ -129,7 +129,7 @@ public partial class MainForm
         var flush = await FlushSockets();
         var sw = cw == null ? "no page" : await ResetServiceWorkers(cw);
         DiagLog.Write($"repair {host}: before [{before}] flush={flush} sw={sw}");
-        if (cw != null && (flush == "ok" || sw == "ok"))
+        if (cw != null && (flush == "ok" || sw.StartsWith("unregister")))
         {
             try { cw.Reload(); } catch { }
             _ = LogAfterRepair(cw, host);
@@ -147,21 +147,25 @@ public partial class MainForm
     {
         if (!Uri.TryCreate(cw.Source, UriKind.Absolute, out var u) || (u.Scheme != "https" && u.Scheme != "http"))
             return "not a web page";
+        // 1) unregister from the page, like edge://serviceworker-internals -> Unregister (fixed it by
+        //    hand on 2026-11-15); enough for a worker stuck "starting" (--stucktest);
+        // 2) then remove the site's workers outright (Storage.clearDataForOrigin, service_workers only):
+        //    a running worker keeps controlling its open page after a plain unregister (--healtest).
+        // No ServiceWorker.stopAllWorkers and no cache_storage any more: on 2026-11-16 and 2026-11-17 the
+        // whole browser process died around a reset that included them (unproven which step; in tests
+        // only attaching to the stuck worker crashed anything, and the black box no longer does that).
         try
         {
-            try
-            {
-                await cw.CallDevToolsProtocolMethodAsync("ServiceWorker.enable", "{}");
-                await cw.CallDevToolsProtocolMethodAsync("ServiceWorker.stopAllWorkers", "{}");
-                await cw.CallDevToolsProtocolMethodAsync("ServiceWorker.disable", "{}");
-            }
-            catch { }
-            var args = JsonSerializer.Serialize(new { origin = u.GetLeftPart(UriPartial.Authority), storageTypes = "service_workers,cache_storage" });
-            await cw.CallDevToolsProtocolMethodAsync("Storage.clearDataForOrigin", args);
-            return "ok";
+            var page = await Eval(cw, UnregisterJs);
+            var args = JsonSerializer.Serialize(new { origin = u.GetLeftPart(UriPartial.Authority), storageTypes = "service_workers" });
+            var cleared = await Cdp(cw, "Storage.clearDataForOrigin", args, 5000);
+            return $"unregister {page}, removed {(cleared == null ? "TIMEOUT" : cleared.Contains("error") ? "error" : "ok")}";
         }
         catch (Exception ex) { return "error: " + ex.Message; }
     }
+
+    const string UnregisterJs = "(async()=>{" + ProbeHelpers +
+        "return await T(()=>navigator.serviceWorker.getRegistrations().then(rs=>Promise.all(rs.map(x=>x.unregister()))).then(a=>a.filter(Boolean).length))})()";
 
     /// <summary>
     /// What the page looks like right now, without touching the network: images still loading or
@@ -251,7 +255,7 @@ public partial class MainForm
         await BlackBox(cw, host); // evidence first: after the reset there is nothing left to look at
         var sw = await ResetServiceWorkers(cw);
         DiagLog.Write($"heal {host}: service worker reset={sw}, reloading");
-        if (sw != "ok") return;
+        if (sw.StartsWith("error") || sw == "not a web page") return;
         try { cw.Reload(); } catch { }
         _ = LogAfterRepair(cw, host);
     }
@@ -291,16 +295,21 @@ public partial class MainForm
         "const T=(f,ms)=>{let p;try{p=f()}catch(e){return Promise.resolve('throw:'+e.name)}" +
         "return Promise.race([Promise.resolve(p).then(v=>'ok:'+v,e=>'err:'+(e&&e.name)),new Promise(r=>setTimeout(()=>r('TIMEOUT'),ms||3000))])};";
 
+    // runs every step of a probe at once (each with its own 3 s limit), keeping the keys in order
+    const string RunAll = "const o=Object.fromEntries(Object.keys(s).map(k=>[k,'']));" +
+        "await Promise.all(Object.entries(s).map(async([k,f])=>{o[k]=await T(f)}));";
+
     const string PageBox = "(async()=>{" + ProbeHelpers +
-        "const o={};" +
-        "o.fetchViaWorker=await T(()=>fetch(location.origin+'/favicon.ico?mz='+Date.now(),{cache:'no-store'}).then(r=>r.status));" +
         "const pi=[...document.images].find(i=>!i.complete&&/^https?:/.test(i.src));" +
-        "o.stuckImageRefetch=pi?await T(()=>fetch(pi.src,{mode:'no-cors'}).then(r=>r.type)):'none';" +
-        "o.caches=await T(()=>caches.keys().then(k=>k.length));" +
-        "o.cacheOpen=await T(()=>caches.open('mizar-probe').then(()=>caches.delete('mizar-probe')));" +
-        "o.idb=await T(()=>indexedDB.databases().then(d=>d.length));" +
-        "o.storage=await T(()=>navigator.storage.estimate().then(e=>Math.round(e.usage/1048576)+'MB'));" +
-        "o.regs=await T(()=>navigator.serviceWorker.getRegistrations().then(r=>r.map(x=>(x.active?'A:'+x.active.state:'')+(x.waiting?' W':'')+(x.installing?' I':'')).join('|')));" +
+        "const s={" +
+        "fetchViaWorker:()=>fetch(location.origin+'/favicon.ico?mz='+Date.now(),{cache:'no-store'}).then(r=>r.status)," +
+        "stuckImageRefetch:()=>pi?fetch(pi.src,{mode:'no-cors'}).then(r=>r.type):'none'," +
+        "caches:()=>caches.keys().then(k=>k.length)," +
+        "cacheOpen:()=>caches.open('mizar-probe').then(()=>caches.delete('mizar-probe'))," +
+        "idb:()=>indexedDB.databases().then(d=>d.length)," +
+        "storage:()=>navigator.storage.estimate().then(e=>Math.round(e.usage/1048576)+'MB')," +
+        "regs:()=>navigator.serviceWorker.getRegistrations().then(r=>r.map(x=>(x.active?'A:'+x.active.state:'')+(x.waiting?' W':'')+(x.installing?' I':'')).join('|'))};" +
+        RunAll +
         "const c=navigator.serviceWorker.controller;o.controller=c?c.state:'none';" +
         "return JSON.stringify(o)})()";
 
@@ -310,22 +319,13 @@ public partial class MainForm
         "const b=pi?await T(()=>fetch(pi.src,{mode:'no-cors'}).then(r=>r.type)):'none';" +
         "return 'favicon='+a+' stuckImage='+b})()";
 
-    const string WorkerBox = "(async()=>{" + ProbeHelpers +
-        "const o={};" +
-        "o.state=self.serviceWorker?self.serviceWorker.state:(self.registration&&self.registration.active?self.registration.active.state:'?');" +
-        "o.caches=await T(()=>caches.keys().then(k=>k.length));" +
-        "o.idb=await T(()=>indexedDB.databases().then(d=>d.length));" +
-        "o.clients=await T(()=>self.clients.matchAll({includeUncontrolled:true}).then(c=>c.length));" +
-        "o.fetch=await T(()=>fetch(self.location.origin+'/favicon.ico?mzw='+Date.now(),{cache:'no-store'}).then(r=>r.status));" +
-        "return JSON.stringify(o)})()";
-
     /// <summary>
     /// Recorded in diag.log just before a stuck page is repaired, so every stall leaves evidence of
     /// WHERE it hangs: (1) the page's own view: does a fetch through the worker answer, do Cache Storage
     /// and IndexedDB answer; (2) the same fetch with the worker bypassed: if that one works, the network
     /// is fine and the worker is the blocker; (3) the engine's view of the worker (status, running
-    /// status, reported errors); (4) inside the worker: is its JS thread alive, and do storage and
-    /// network answer from there. Hosts and states only; takes up to ~25 s when things hang.
+    /// status, reported errors); (4) whether the worker exists as a debug target (it is never attached:
+    /// that crashed a stuck worker's page in tests). Hosts and states only; about 10 s when things hang.
     /// </summary>
     async Task BlackBox(CoreWebView2 cw, string host)
     {
@@ -376,7 +376,7 @@ public partial class MainForm
             DiagLog.Write($"blackbox {host} engine: {(versions.Count == 0 ? "no worker version reported" : string.Join(" ; ", versions.Distinct()))}" +
                           (errors.Count > 0 ? " errors: " + string.Join(" | ", errors.Distinct().Take(5)) : ""));
 
-            // inside the worker
+            // the worker as a debug target
             var targets = await Cdp(cw, "Target.getTargets", "{}");
             string? targetId = null;
             if (targets != null)
@@ -389,14 +389,10 @@ public partial class MainForm
                         { targetId = t.GetProperty("targetId").GetString(); break; }
             }
             if (targetId == null) { DiagLog.Write($"blackbox {host} worker: no worker target (not running)"); return; }
-            var att = await Cdp(cw, "Target.attachToTarget", JsonSerializer.Serialize(new { targetId, flatten = true }));
-            string? session = null;
-            if (att != null) { using var d = JsonDocument.Parse(att); if (d.RootElement.TryGetProperty("sessionId", out var sid)) session = sid.GetString(); }
-            if (session == null) { DiagLog.Write($"blackbox {host} worker: could not attach"); return; }
-            var alive = await Eval(cw, "String(1+1)", session);
-            var inside = alive == "2" ? await Eval(cw, WorkerBox, session) : "(skipped)";
-            DiagLog.Write($"blackbox {host} worker: jsThread={(alive == "2" ? "alive" : alive)} inside={inside}");
-            await Cdp(cw, "Target.detachFromTarget", JsonSerializer.Serialize(new { sessionId = session }), 2000);
+            // Not attaching to it any more: on 2026-11-17 a test worker stuck "starting" crashed its
+            // page's process (0xC0000005) every time the black box attached to it and evaluated code there,
+            // and the owner's engine died 3 s after the same step. Its presence and type are enough.
+            DiagLog.Write($"blackbox {host} worker: target present (not attached)");
         }
         catch (Exception ex) { DiagLog.Write($"blackbox {host}: failed {ex.Message}"); }
     }

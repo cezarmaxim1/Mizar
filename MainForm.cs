@@ -9,6 +9,9 @@ public partial class MainForm : Form
     readonly BookmarkStore bookmarks = BookmarkStore.Load();
     readonly bool firstRun = !BookmarkStore.Exists;
     Task<CoreWebView2Environment>? envTask;
+    /// <summary>Bumped when the engine is restarted, so late events from the dead engine are ignored.</summary>
+    int engineGen;
+    readonly List<DateTime> engineRestarts = new();
     readonly List<BrowserTab> tabs = new();
     BrowserTab? active;
     readonly Stack<string> closedTabs = new();
@@ -877,6 +880,45 @@ public partial class MainForm : Form
         SyncStrip();
     }
 
+    /// <summary>
+    /// The whole browser process died (seen on 2026-11-17, exit 0xC0000005): every tab was blank and
+    /// nothing worked until Mizar was restarted. Start a new engine and give every tab a fresh view;
+    /// tabs come back lazily (like a restored session), the active one right away.
+    /// </summary>
+    void RecoverEngine()
+    {
+        if (IsDisposed) return;
+        var now = DateTime.Now;
+        engineRestarts.RemoveAll(t => now - t > TimeSpan.FromMinutes(10));
+        engineRestarts.Add(now);
+        if (engineRestarts.Count > 3)
+        {
+            DiagLog.Write("engine died again: not restarting it (more than 3 times in 10 minutes)");
+            MessageBox.Show(this, "Motorul browserului s-a oprit de mai multe ori în ultimele minute.\nÎnchide Mizar și deschide-l din nou.",
+                "Mizar", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        DiagLog.Write($"engine restart tabs={tabs.Count}");
+        envTask = null;
+        var keep = active;
+        content.SuspendLayout();
+        foreach (var t in tabs)
+        {
+            var old = t.ReplaceView();
+            t.View.DefaultBackgroundColor = Theme.Surface;
+            content.Controls.Remove(old);
+            content.Controls.Add(t.View);
+            try { old.Dispose(); } catch (Exception ex) { ErrorLog.Write("Dispose dead view", ex); }
+            t.PendingUrl ??= string.IsNullOrWhiteSpace(t.Url) ? "about:blank" : t.Url;
+            t.IsLoading = false;
+        }
+        content.ResumeLayout();
+        active = null;
+        if (keep != null && tabs.Contains(keep)) Activate(keep);
+        else if (tabs.Count > 0) Activate(tabs[0]);
+        UpdateNav();
+    }
+
     /// <summary>Starts the engine for a tab and loads its first page. False if the tab is gone or the engine failed.</summary>
     async Task<bool> InitTab(BrowserTab tab, string? url, CoreWebView2NewWindowRequestedEventArgs? nw = null, CoreWebView2Deferral? deferral = null)
     {
@@ -987,9 +1029,16 @@ public partial class MainForm : Form
         cw.ServerCertificateErrorDetected += (_, _) => { tab.CertError = true; TabChanged(tab); };
         cw.ContainsFullScreenElementChanged += (_, _) => { if (tab == active) SetFullscreen(cw.ContainsFullScreenElement); };
         cw.WindowCloseRequested += (_, _) => BeginInvoke(() => CloseTab(tab));
+        int gen = engineGen;
         cw.ProcessFailed += (_, e) =>
         {
             DiagLog.Write($"process failed {e.ProcessFailedKind} reason={e.Reason} exit={e.ExitCode} host={Bookmark.HostOf(tab.Url)}");
+            if (e.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited)
+            {
+                // every tab reports it: only the first report of this engine restarts it
+                if (gen == engineGen) { engineGen++; BeginInvoke(RecoverEngine); }
+                return;
+            }
             if (e.ProcessFailedKind != CoreWebView2ProcessFailedKind.RenderProcessExited) return;
             BeginInvoke(() =>
             {
@@ -1159,6 +1208,60 @@ public partial class MainForm : Form
             keys += $"heal: stuck -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(img))}\n";
             await Task.Delay(40000); // slow-load check (6 s in this test) + black box + heal + reload
             keys += $"heal: after -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(img))}\n";
+        }
+        if (startArgs.Contains("--stucktest"))
+        {
+            // a worker whose script never finishes when it is started again: the "running=starting"
+            // state Gmail's worker was in on 2026-11-17. The reset must not take the engine down.
+            // --oldreset runs the reset used until then (stopAllWorkers + clearDataForOrigin) instead.
+            const string regs = "navigator.serviceWorker.getRegistrations().then(r => r.length)";
+            await cw.ExecuteScriptAsync("navigator.serviceWorker.register('/loop-sw.js')");
+            await Task.Delay(3000);
+            cw.Reload();
+            await Task.Delay(3000);
+            await Cdp(cw, "ServiceWorker.enable", "{}");
+            await Cdp(cw, "ServiceWorker.stopAllWorkers", "{}"); // healthy worker: stop it, so the next request restarts it
+            await Cdp(cw, "ServiceWorker.disable", "{}");
+            await Task.Delay(2000);
+            await cw.ExecuteScriptAsync("fetch('/i0.svg?x=' + Date.now())"); // starts the worker: its script loops
+            await Task.Delay(3000);
+            var pid = cw.BrowserProcessId;
+            if (!startArgs.Contains("--nobox")) await BlackBox(cw, Bookmark.HostOf(cw.Source));
+            string how;
+            if (startArgs.Contains("--oldreset"))
+            {
+                how = "old";
+                await Cdp(cw, "ServiceWorker.enable", "{}");
+                await Cdp(cw, "ServiceWorker.stopAllWorkers", "{}");
+                await Cdp(cw, "ServiceWorker.disable", "{}");
+                var u = new Uri(cw.Source);
+                await Cdp(cw, "Storage.clearDataForOrigin", System.Text.Json.JsonSerializer.Serialize(new { origin = u.GetLeftPart(UriPartial.Authority), storageTypes = "service_workers,cache_storage" }));
+            }
+            else how = "new: " + await ResetServiceWorkers(cw);
+            await Task.Delay(4000);
+            bool alive; try { alive = !Process.GetProcessById((int)pid).HasExited; } catch { alive = false; }
+            keys += $"stuck: reset {how} -> browser process alive={alive} restarts={engineRestarts.Count}\n";
+            if (alive)
+            {
+                cw.Reload();
+                await Task.Delay(4000);
+                keys += $"stuck: after reload regs={await Eval(cw, regs)} controlled={await cw.ExecuteScriptAsync("!!navigator.serviceWorker.controller")}\n";
+            }
+        }
+        if (startArgs.Contains("--enginetest"))
+        {
+            // kill the whole browser process (what happened on 2026-11-17); Mizar must start a new engine
+            var pid = (int)cw.BrowserProcessId;
+            keys += $"engine: killing browser process {pid}\n";
+            try { Process.GetProcessById(pid).Kill(); } catch (Exception ex) { keys += "engine: kill failed " + ex.Message + "\n"; }
+            await Task.Delay(12000);
+            var c2 = active?.Core;
+            keys += $"engine: after -> restarts={engineRestarts.Count} core={(c2 != null)} newPid={(c2 != null ? c2.BrowserProcessId : 0)} source={Bookmark.HostOf(c2?.Source ?? "")} pending={tabs.Count(t => t.PendingUrl != null)} of {tabs.Count}\n";
+            if (c2 != null)
+            {
+                keys += $"engine: title -> {System.Text.Json.JsonSerializer.Deserialize<string>(await c2.ExecuteScriptAsync("document.title"))}\n";
+                cw = c2;
+            }
         }
         if (startArgs.Contains("--repairtest"))
         {

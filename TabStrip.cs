@@ -6,7 +6,20 @@ namespace Mizar;
 
 public class BrowserTab
 {
-    public WebView2 View { get; } = new() { Dock = DockStyle.Fill, Visible = false };
+    public WebView2 View { get; private set; } = new() { Dock = DockStyle.Fill, Visible = false };
+
+    /// <summary>
+    /// After the browser process died, a WebView2 control can't be started again: the tab gets a new
+    /// one (returned is the old one, for the caller to remove and dispose). Per-page state is reset.
+    /// </summary>
+    public WebView2 ReplaceView()
+    {
+        var old = View;
+        View = new() { Dock = DockStyle.Fill, Visible = false };
+        InFlight.Clear(); NetWatch = false; Receivers.Clear(); Crashes.Clear();
+        CertError = false; ZoomHost = null; ExpectedZoom = 1.0; SlowLogged = false;
+        return old;
+    }
     public string Title { get; set; } = "Tab nou";
     public string Url { get; set; } = "";
     public Image? Favicon { get; private set; }
