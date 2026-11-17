@@ -101,6 +101,7 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
     - dated at close but missing at start → something removes them on shutdown or startup;
     - present at `start` but gone `after history wipe` → `ClearData` is the cause.
   - Verified on an isolated profile: the lines are written and closing still works.
+  - 2026-11-17 11:28 (reinstall, closed with `WM_CLOSE`): all 30 Google cookies present at `start`, dated, kept after the wipe; the owner **stayed signed in**. Second suspect: an unclean end. The engine crashed on 2026-11-16 17:19 and 2026-11-17 08:52; Google rotates `__Secure-1PSIDTS` often, and a crash may leave an older copy on disk that Google then rejects. Watch whether a sign-out follows a `process failed BrowserProcessExited` or a start with no `close` line before it.
   - Fallback experiment for the owner: turn cookie blocking off, sign in, restart twice.
 
 - **Wrong URL in the address bar:** it once showed a Facebook URL while the Gmail tab was active. Not reproduced, not investigated.
