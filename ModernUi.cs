@@ -37,7 +37,7 @@ static class Theme
     public static Color HoverFill => Dark ? C(38, 38, 45) : C(232, 235, 241);
     public static Color PressFill => Dark ? C(52, 52, 60) : C(220, 224, 232);
     public static Color TabHover => Dark ? C(27, 27, 32) : C(226, 230, 237);
-    public static Color TabActive => Dark ? C(33, 33, 39) : Color.White;
+    public static Color TabActive => Dark ? C(42, 42, 49) : Color.White; // no outline: a lighter fill carries it
     public static Color CaptionCircle => Dark ? C(31, 31, 37) : C(224, 228, 236);
     public static Color CaptionCircleHover => Dark ? C(48, 48, 56) : C(206, 211, 222);
     public static Color Separator => Dark ? C(48, 48, 56) : C(200, 204, 212);

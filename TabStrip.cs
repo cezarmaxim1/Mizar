@@ -204,16 +204,10 @@ public class TabStrip : Control
 
             if (sel)
             {
-                using var shadowPath = Theme.Round(new RectangleF(r.X, r.Y + P(1), r.Width, r.Height), rad);
-                using var sb = new SolidBrush(Color.FromArgb(Theme.Dark ? 70 : 28, 0, 0, 0));
-                g.FillPath(sb, shadowPath);
-
+                // fill only, no outline or shadow (owner's choice, 2026-11-17)
                 using var path = Theme.Round(r, rad);
                 using var b = new SolidBrush(Theme.TabActive);
                 g.FillPath(b, path);
-
-                using var pen = new Pen(Color.FromArgb(Theme.Dark ? 28 : 22, Theme.Dark ? Color.White : Color.Black));
-                g.DrawPath(pen, path);
             }
             else if (hov)
             {
