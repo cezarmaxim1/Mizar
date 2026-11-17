@@ -1,54 +1,92 @@
-# Mizar Architecture
+# Mizar architecture
 
-> Module ownership map and key symbol reference for **Mizar** (`.NET 10`, WinForms + `Microsoft.Web.WebView2`).
-> Check this map first instead of re-reading full `.cs` files. Behavioral constraints, MSIX gotchas, and build/test recipes stay in `CLAUDE.md` / `AI.md`.
+Rules, commands and traps are in `AGENTS.md`. Open problems are in `STATUS.md`.
 
----
+## Process model
 
-## 1. Architecture & Process Model
+- **One window, one `MainForm`.** It is a partial class split across three files:
+  - `MainForm.cs`: window, tabs, navigation, features, self-test runner;
+  - `NetRepair.cs`: network watch, repair, heal, black box, diagnostics;
+  - `Updater.cs`: update check UI.
+- **One shared `CoreWebView2Environment`** (`MainForm.envTask`) on `<data>\WebData`, so all tabs share one browser process.
+  - If that process dies, `RecoverEngine` creates a new environment and gives every tab a new `WebView2` (`BrowserTab.ReplaceView`).
+  - `engineGen` ignores the duplicate reports, one per tab, from the dead engine.
+- **Single instance per data folder** (`SingleInstance` in `AppServices.cs`): a mutex `Local\Mizar.Instance.<id>` plus a pipe `Mizar.Open.<id>`.
+  - A second launch sends its URL, or `mizar-cmd:fixnet|netdiag`, and exits.
+  - URLs that arrive before the session is ready wait in `pendingPipeUrls`.
+  - `--selftest` skips the single-instance check.
 
-* **UI Framework:** Single-window WinForms app (`ApplicationHighDpiMode = PerMonitorV2`), frameless custom caption (`WM_NCCALCSIZE` + `WM_NCHITTEST`) with owner-drawn chrome and dialogs.
-* **Web Engine:** One shared `CoreWebView2Environment` stored in `MainForm.envTask` pointing at `%LOCALAPPDATA%\Mizar\WebData` (or `$MIZAR_DATA_DIR\WebData` during isolated tests). All open tabs run in that shared environment; inactive background tabs switch to `CoreWebView2MemoryUsageTargetLevel.Low` and sleep via `TrySuspendAsync()` after 5 minutes if idle.
-* **Single Instance vs Self-Test:** Normal launches acquire a per-data-folder `SingleInstance` mutex and forward URLs or maintenance commands (`mizar-cmd:...`) over a named pipe to the running `MainForm`. Launches with `--selftest` bypass `SingleInstance` and exit after writing their diagnostic output.
-* **Partial Class Split (`MainForm`):** `MainForm` is split across three files by concern:
-  1. `MainForm.cs` — Window shell, layout, tab lifecycle, navigation, bookmarks, downloads, zoom, shortcuts, self-test runner.
-  2. `NetRepair.cs` — Background-tab CDP network watch (`InFlight`), socket pool flushing (`edge://net-internals/#sockets`), service-worker reset, slow-load logging to `diag.log`, wake-from-sleep handler, `--netdiag`/`--fixnet`.
-  3. `Updater.cs` (bottom partial class) — Monthly & manual GitHub Releases check, download/staging orchestration, restart prompt.
+## Modules
 
----
-
-## 2. Module Ownership Map
-
-| File | Types / Classes | Owns (State, Disk Files, Responsibilities) | Key Symbols & Invariants |
-|---|---|---|---|
-| `Program.cs` | `Program` | Entry point, CLI flag dispatch, single-instance guard, post-exit update swap. | `Main` handles `--register`, `--unregister`, `--release-genkey`, `--release-sign`, `--selftest`, `--fixnet`, `--netdiag`; calls `ErrorLog.Install()`, wires `guard?.Listen(form.EnqueueFromOtherInstance)`, calls `Updater.CleanupOld()`, and applies staged updates after `Application.Run(form)` exits. |
-| `MainForm.cs` | `MainForm` *(partial)* | Window state (`lastWindowState`), chrome controls (`root`, `tabStrip`, `nav`, `addressBox`, `bar`, `content`, `suggest`, `zoomChip`, `menu`), timers (`sleepTimer`, `zoomPoll`, `sessionTimer`, `driveUploadTimer`), `tabs`/`active`/`closedTabs`, `settings`, `bookmarks`, `history`, `pendingPipeUrls`. | **Lifecycle:** `Shown` restores lazy session tabs (if `RestoreSession`), creates/activates first tab, drains `pendingPipeUrls` once `sessionReady`, clears history (if `ClearHistoryOnExit`), triggers one-time `ImportOperaFavicons`/`PrefetchFavicons`/`SyncBookmarksAsync`/`AutoCheckForUpdates`. **Tabs:** `NewTabFocused` (`about:blank`), `CreateTab`, `AddLazyTab`, `InitTab`, `Wire`, `RecoverEngine` (new engine + `BrowserTab.ReplaceView` after `BrowserProcessExited`), `Activate`, `CloseTab`, `SleepInactiveTabs`. **Caption/Layout:** `OnHandleCreated`, `WndProc` (`WM_NCCALCSIZE`, `WM_NCHITTEST`), `RestoreWindow`, `SaveWindow`, `SetFullscreen`, `ApplyTheme`. **Navigation/Features:** `Normalize`, `Navigate`, `ApplySiteZoom`, `OnZoomChanged`, `CheckZoom`, `RebuildBookmarkBar`, `OnDownloadStarting`, `ShortcutScript`, `RunShortcut`, `ProcessCmdKey`, `RunSelfTest`. |
-| `TabStrip.cs` | `BrowserTab`, `TabStrip` | Per-tab model & custom owner-drawn floating tab strip + vector caption buttons. | **`BrowserTab`:** owns `View` (`WebView2`), `Title`, `Url`, `Favicon`/`SetFavicon(img, owned)`, `IsLoading`, `LastActive`, `InFlight` (`Dictionary<string, DateTime>`), `NetWatch`, `Receivers`, `Internal`, `PendingUrl`, `Crashes`, `CertError`, `ZoomHost`, `ExpectedZoom`, `Core`. **`TabStrip`:** 20 fps loading spinner timer (runs only while a tab loads), right-edge title text fade (`LinearGradientBrush`), `CloseHitRect` extending to top-right/bottom-right corner, `IsInteractive` + `HTTRANSPARENT`. |
-| `ModernUi.cs` | `Theme`, `HitTestPanel`, `RoundButton`, `TextChip`, `AddressBox`, `SecurityLevel`, `ModernRenderer`, `Native` | Windows light/dark theme palette, reusable flat controls, DWM/User32/UxTheme P/Invokes. | **`Theme`:** reads `AppsUseLightTheme`, caches `GlyphFonts`, provides `ApplyToWindow`, `ApplyToDialog`, `Round`, `DrawGlyph`. **`HitTestPanel`:** `PassThrough` lets empty tab-strip regions become `HTCAPTION`/`HTTOP`. **`AddressBox`:** pill text field + `SecurityLevel` chip (`Secure`/`Insecure`/`CertError`/`Internal`). **`ModernRenderer`:** dark/light `ToolStripProfessionalRenderer`. |
-| `Storage.cs` | `AppPaths`, `Settings`, `SessionData`, `SessionTab`, `KnownFolders`, `Bookmark`, `BookmarkStore`, `FaviconCache`, `AdBlocker` | Data folder paths, JSON config/sessions/bookmarks, backup rotation, memory/disk icon cache, ad & tracker rules. | **`AppPaths`:** `%LOCALAPPDATA%\Mizar` or `MIZAR_DATA_DIR`. **`BookmarkStore`:** `bookmarks.json`, `.bak`, up to 10 daily backups in `backups/`, `ImportFromOpera`, lazy caches (`urlCache`, `urlMap`, `hostCache`) invalidated on every mutation (`Save`, `NotifyChanged`, `ReplaceFromSync`, `ImportFromOpera`, `Remove`). **`FaviconCache`:** `favicons/*.png` + `lock (Cache)` for thread-safe reads/writes. **`AdBlocker`:** `Domains`, `TrackerDomains`, `TrackerPatterns` (Facebook Pixel paths only), zero-allocation `Classify()` via `GetAlternateLookup<ReadOnlySpan<char>>()`. |
-| `Dialogs.cs` | `Ui`, `EditDialog`, `SettingsForm`, `DriveApiDialog`, `BookmarkManagerForm`, `Icons` | Modal WinForms dialogs and vector folder/globe fallback icons. | **`SettingsForm`:** edits `Settings`, triggers data clear (`ClearData`), Opera import, Drive connect/sync/disconnect (closes `SettingsForm` before launching OAuth so the auth tab isn't blocked by a modal dialog), and manual update check. **`BookmarkManagerForm`:** TreeView with drag-and-drop (`OnDrop`) and `ImageList` cleanup on dispose. |
-| `DriveSync.cs` | `DriveSync` | Bookmark sync via Google Drive REST API v3 + OAuth 2.0 PKCE + DPAPI encryption. | Stores encrypted refresh/access tokens (`DriveTokenEnc`) with Windows `CryptProtectData`; loopback `HttpListener` OAuth (`ConnectAsync`); serializes Drive calls through `SemaphoreSlim Gate` (`SyncAsync`, `UploadAsync`) targeting `mizar-bookmarks.json` with `drive.file` scope. |
-| `History.cs` | `HistoryEntry`, `HistoryStore` | Visit history (`history.json`, max `5000` entries) and HTML UI for `https://mizar.internal/history`. | Batches disk writes via 10 s `saveTimer` (`IDisposable`), respects `ReadOnly` during tests on real data, exposes `Visit`, `UpdateTitle`, `NewestFirst`, `Delete`, `Clear`, `BuildPage`. |
-| `Suggest.cs` | `Suggestion`, `SuggestBox` | Address-bar autocomplete ranking and non-focusable dropdown popup. | `SuggestBox.Find` searches bookmarks then `HistoryStore.NewestFirst()`, ranks prefix matches first, filters long redirect queries (`> 80` chars) and passthrough titles, deduplicates by `host + path`. |
-| `OperaFavicons.cs` | `OperaFavicons` | One-time SQLite extraction of Opera bookmark icons into `favicons/u_<hash>.png`. | Copies Opera's locked `Favicons` DB to `%TEMP%`, scores icons closest to 32 px, stores `u_<hash>` and host fallbacks, writes `opera-favicons.done`. |
-| `AppServices.cs` | `InternalPages`, `ErrorLog`, `DiagLog`, `SingleInstance`, `DefaultBrowser` | Built-in virtual host responses, crash logging, IPC lock/pipe, HKCU browser registration. | **`InternalPages`:** serves `/history` and `/crashed` from `WebResourceRequested` (`X-Frame-Options: DENY`). **`ErrorLog`:** `errors.log` rotated at 512 KB. **`DiagLog`:** `diag.log` (event lines, hosts only, rotated at 256 KB). **`SingleInstance`:** `Local\Mizar.Instance.<id>` mutex + `Mizar.Open.<id>` pipe. **`DefaultBrowser`:** registers `MizarHTML` ProgID and `StartMenuInternet\Mizar`. |
-| `NetRepair.cs` | `MainForm` *(partial)* | Anti-freeze protection for HTTP/2 socket pools and background tab suspension guard. | **`WireNetWatch`/`SetNetWatch`:** enables CDP `Network` only on background tabs; tracks active HTTP/HTTPS non-streaming requests in `BrowserTab.InFlight` (expires > 60 s). **`FlushSockets`:** guarded by `flushing`, clicks `sockets-view-flush-button` on `edge://net-internals/#sockets`. **`RepairConnection`:** page probe → `FlushSockets` → `ResetServiceWorkers` (page `unregister()` + `Storage.clearDataForOrigin` with `service_workers` only) → reload, all logged to `diag.log`. **`LogSlowLoad`:** logs a page probe after 20 s; if `WedgedWorker(probe)` (worker active, >=80% of images pending) it calls `HealWedgedWorker` (worker reset + reload of that page, once per 5 min per site). Never flushes sockets. **`BlackBox`:** evidence written to `diag.log` before each heal (page, bypass fetch, engine's worker status, whether a worker target exists; never attaches to it: that crashed a stuck worker's page); helpers `Cdp` (CDP call with timeout) and `Eval`. Also owns `OnPowerModeChanged`, `PageProbe`, `RunCommand`, `RunNetDiag` (three phases: as is, after flush, after worker reset). |
-| `Updater.cs` | `Updater`, `MainForm` *(partial)* | GitHub Releases self-updater (`cezarmaxim1/Mizar`) + release signing CLI tools. | Verifies ECDSA P-256 signature (`PublicKey`) over `"<version>\n<sha256>"`, extracts to `update/staged`, swaps via `*.old` on close (`ApplyStaged`, `CleanupOld`), provides `--release-genkey` and `--release-sign`. |
-| `release.ps1` | — *(PowerShell)* | End-to-end signed release pipeline. | Validates clean git tree and `%USERPROFILE%\.mizar-release\signing-key.pem`, updates `<Version>` in `Mizar.csproj`, publishes & strips `.xml`/`.pdb`/`Microsoft.Web.WebView2.Wpf.dll`, zips, signs with `--release-sign`, commits/tags/pushes, creates GitHub release via `gh`. |
-
----
-
-## 3. Cross-Cutting Flows & "Where to Edit"
-
-| Task | Files / Entry Points |
+| File | Owns |
 |---|---|
-| **Theme colors or rounded control visuals** | `ModernUi.cs` (`Theme` palette, `RoundButton`, `AddressBox`, `ModernRenderer`), `TabStrip.cs` (`TabStrip.OnPaint`) |
-| **Add a keyboard shortcut** | Add **both** in `MainForm.ProcessCmdKey` (WinForms focus) and `MainForm.ShortcutScript` + `RunShortcut` (WebView2 focus) in `MainForm.cs` |
-| **Add a setting / privacy toggle** | Property in `Settings` (`Storage.cs`) -> UI control + `SaveFields()` in `SettingsForm` (`Dialogs.cs`) -> apply in `MainForm.ApplySettings()` / `EngineOptions()` (`MainForm.cs`) |
-| **Change ad/tracker rules or exceptions** | `AdBlocker.Domains`, `TrackerDomains`, `TrackerPatterns`, `Classify` (`Storage.cs`); `WebResourceRequested` and its filters (source kind `Document` only) in `MainForm.cs` |
-| **Debug stalled pages / network hangs** | `diag.log` first; then `NetRepair.cs` (`RepairConnection`, `ResetServiceWorkers`, `PageProbe`, `LogSlowLoad`, `WireNetWatch`, `FlushSockets`, `RunNetDiag`) |
-| **Change bookmark / Drive sync behavior** | Data & cache in `BookmarkStore` (`Storage.cs`), tree UI in `BookmarkManagerForm` (`Dialogs.cs`), OAuth/REST v3 in `DriveSync.cs`, triggers in `MainForm.cs` |
-| **Change self-update or signing** | `Updater.cs` and `release.ps1` (`MainForm.AutoCheckForUpdates` / `Program.Main`) |
+| `Program.cs` | Entry point and CLI flags; installs `ErrorLog`; hands off to a running instance; `Updater.CleanupOld()` at start, `Updater.ApplyStaged()` after the window closes. |
+| `MainForm.cs` | Layout and custom caption (`WndProc`: `WM_NCCALCSIZE`, `WM_NCHITTEST`, `RecalcFrame`, `EnsureClientOnScreen`).<br>Tab lifecycle (`CreateTab`, `AddLazyTab`, `InitTab`, `Wire`, `Activate`, `CloseTab`, `RecoverEngine`) and sleeping (`SleepInactiveTabs`).<br>Zoom (`ApplySiteZoom`, `CheckZoom`, `zoomPoll`), DPI (`ApplyDpi`), theme (`ApplyTheme`), engine flags (`EngineOptions`).<br>Shortcuts (`ProcessCmdKey`, `ShortcutScript`, `RunShortcut`), downloads, session, `RunSelfTest`. |
+| `TabStrip.cs` | `BrowserTab`: the per-tab model (`View`, `Url`, `PendingUrl`, `InFlight`, `Receivers`, `Crashes`, zoom state).<br>`TabStrip`: owner-drawn tabs and window buttons; empty areas return `HTTRANSPARENT`. |
+| `ModernUi.cs` | `Theme` (palette, `Dpi`, `UiFont`, `DrawGlyph`, `ApplyToDialog`), `HitTestPanel`, `RoundButton`, `TextChip`, `AddressBox` (with the `SecurityLevel` chip), `ModernRenderer`, `Native` (P/Invoke). |
+| `Storage.cs` | `AppPaths`, `Settings` (JSON), `SessionData`, `Bookmark`/`BookmarkStore` (atomic save, `.bak`, 10 daily backups, damaged-file recovery, Opera import), `FaviconCache`, `AdBlocker` (`Classify`, `FilterPatterns`). |
+| `Dialogs.cs` | `EditDialog`, `SettingsForm`, `DriveApiDialog`, `BookmarkManagerForm` (tree with drag and drop). |
+| `History.cs` | `HistoryStore`: `history.json`, at most 5000 entries, flushed every 10 s and on exit; `BuildPage` renders the history page HTML. |
+| `Suggest.cs` | `SuggestBox`: address-bar drop-down. Bookmarks first, then history newest first; at most 6 rows, one per host + path. |
+| `OperaFavicons.cs` | One-time import of Opera's favicons (the SQLite DB is copied to temp first) into `favicons/u_<hash>.png`; writes `opera-favicons.done`. |
+| `DriveSync.cs` | Bookmark sync to `mizar-bookmarks.json` on Google Drive: REST v3, OAuth PKCE through a loopback listener, `drive.file` scope, tokens encrypted with DPAPI. |
+| `AppServices.cs` | `InternalPages` (`/history`, `/crashed`), `ErrorLog` (`errors.log`, rotated at 512 KB), `DiagLog` (`diag.log`, rotated at 256 KB), `SingleInstance`, `DefaultBrowser`. |
+| `NetRepair.cs` | Background network watch (`WireNetWatch`/`SetNetWatch`, `InFlight`), `FlushSockets`, `ResetServiceWorkers`, `RepairConnection`, `PageProbe`, `LogSlowLoad` → `WedgedWorker` → `HealWedgedWorker`, `BlackBox` (helpers `Cdp`, `Eval`), `OnPowerModeChanged`, `RunNetDiag`. |
+| `Updater.cs` | `Updater`: GitHub Releases check, ECDSA verify, stage, swap on exit, `--release-genkey`/`--release-sign`. |
 
-> **Window frame:** `MainForm.WndProc` owns `WM_NCCALCSIZE` (client area = work area when maximized), `RecalcFrame` and `EnsureClientOnScreen` (self-heal after display changes; see known issue 3 in `CLAUDE.md`).
-> **Monitor scaling:** `MainForm.ApplyDpi` + `Theme.UiFont`/`Theme.Dpi` (`ModernUi.cs`); every sized control or font must be re-applied there. Scenario test: `tests/two-monitors.ps1`.
+## Data flows
+
+- **Startup:** `Program` → `MainForm` → `Shown`. If `RestoreSession` is on, saved tabs come back lazily (title and icon only); otherwise one home-page tab opens. Then the pipe queue is drained, history cleared (if `ClearHistoryOnExit`), and the one-time jobs run (Opera favicons, Drive sync, update check one minute after start).
+- **Tab start:** `InitTab` → `EnsureCoreWebView2Async(sharedEnv)` → `Wire` (events, filters, injected shortcut script) → `Navigate`. A lazy tab does this on its first `Activate`.
+- **Requests:** `AddWebResourceRequestedFilter` with one pattern per ad or tracker domain (source kind `Document`). Only matching requests reach .NET, where `AdBlocker.Classify` decides by exact host. Requests for `mizar.internal` are served by `InternalPages.Serve`.
+- **Background tab:**
+  1. When hidden: `MemoryUsageTargetLevel.Low`, and CDP `Network` turns on to track `InFlight`.
+  2. After `SleepAfter` (5 min) with no audio and no request in flight: `TrySuspendAsync`.
+  3. When shown again: it resumes, and the network watch turns off.
+- **Slow page:** `zoomPoll` (1 s, active tab) → `LogSlowLoad`. After 20 s it logs a `PageProbe`; if `WedgedWorker` matches, it runs `HealWedgedWorker`: `BlackBox` → `ResetServiceWorkers` → reload. All of it goes to `diag.log`.
+- **Update:**
+  1. Monthly or manual: one call to `api.github.com/.../releases/latest`.
+  2. Download the zip and its `.sig`, verify the signature over `"<version>\n<sha256>"`, unpack to `update\staged`.
+  3. On exit: rename running files to `*.old`, copy the new ones; on error, roll back.
+  4. At the next start, delete the `*.old` files.
+- **Settings:** `SettingsForm` → `Settings.Save` → `MainForm.ApplySettings`. Engine flags (cookies) apply only after a restart; `WebColorScheme` applies live.
+
+## Decisions and why
+
+- **WebView2 + WinForms instead of a Chromium fork or WPF:** the engine already ships with Windows 11, so Mizar itself stays small. Measured on 2026-11-13: about 400 MB of WebView2 plus about 65 MB for `Mizar.exe`, versus about 2.4 GB for Opera.
+- **Lazy restored tabs:** no page process until a tab is shown. Verified: 3 restored tabs, 1 page process.
+- **Sleeping never interrupts a request:** all tabs share one HTTP/2 connection per server group, and a frozen tab that stops reading could stall it for everyone. `InFlight` ignores WebSocket, EventSource and non-HTTP requests, and expires entries after 60 s.
+- **Own blocker instead of Edge tracking prevention:** `EnableTrackingPrevention=false`. It was turned off during the Gmail experiment and stayed off, since Mizar blocks trackers itself.
+- **Engine flags** (`EngineOptions`):
+  - `--enable-features=HttpsUpgrades`: HTTPS-First, falling back to HTTP;
+  - `--test-third-party-cookie-phaseout`: only way that works to block third-party cookies;
+  - `AreHostObjectsAllowed=false`;
+  - permissions left to the engine's own prompt.
+- **Facebook Pixel blocked by path only** (`fbevents.js`, `facebook.com/tr`), so logins and embeds keep working. YouTube ads can't be blocked by domain: they come from the same servers as the videos.
+- **Built-in pages on `https://mizar.internal/`:** real navigations, sent with `X-Frame-Options: DENY` and `frame-ancestors 'none'`. History commands (`postMessage`) are accepted only from the history page itself.
+- **Self-update:**
+  - signed with ECDSA, with the version inside the signed data, so an old zip can't be re-tagged as new;
+  - checked at most monthly, with no background process between checks;
+  - swapped only on exit.
+- **Per-monitor DPI:** sizes go through `S(...)` and fonts are pixel-sized (`Theme.UiFont`); all of it is re-applied on `OnDpiChanged`. The owner's two monitors are 150% (primary, 2560x1600) and 100% (1920x1200, above it).
+- **Page canvas:** a new tab uses the theme colour, to avoid a white flash; `ContentLoading` switches it to white.
+- **Zoom per site:** `Settings.SiteZoom` maps host → factor (without "www."; 100% isn't stored). `ExpectedZoom` tells a user change apart from one Mizar made itself; zoom steps follow Chrome's levels.
+- **Suggestions:**
+  - 1–2 letters match only the start of a host or of a title word; 3 or more match anywhere.
+  - Filtered out: queries longer than 80 characters, redirect titles, and titles that are really addresses.
+- **Bookmarks:** saves are atomic. A damaged file is set aside as `bookmarks.damaged-*.json` and the newest good copy is restored.
+- **History privacy:** `ClearHistoryOnExit` (on by default) wipes `history.json` on close. At start, `ClearData(BrowsingHistory | DownloadHistory)` also clears the engine's own history. `diag.log` still keeps host names (a known trade-off).
+- **Service-worker reset** = page `unregister()` + `Storage.clearDataForOrigin` (`service_workers` only):
+  - unregistering alone fixes a worker stuck "starting";
+  - a running worker keeps controlling its open page until it is removed outright.
+
+## Rejected alternatives
+
+- **`NavigateToString` for built-in pages:** Back/Forward broke, and it has a 2 MB limit.
+- **CDP `Network.setCookieControls`:** has no effect in WebView2.
+- **Ad-filter source kind `All`:** it routed service-worker requests through Mizar.
+- **Socket flush as the Gmail fix:** it never fixed anything. It stays only in the manual menu and after wake-up.
+- **Automatic socket flush on slow loads:** it could cut downloads (owner's decision).
+- **`ServiceWorker.stopAllWorkers` and `cache_storage` in the reset:** dropped on 2026-11-17, after two engine deaths during a reset that used them.
+- **Attaching to the worker in the black box:** crashed a stuck worker's page process in tests.
+- **Restoring the session by default:** the owner prefers a single home-page tab.
