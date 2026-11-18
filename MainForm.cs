@@ -1248,6 +1248,14 @@ public partial class MainForm : Form
             await Task.Delay(40000); // slow-load check (6 s in this test) + black box + heal + reload
             keys += $"heal: after -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(img))}\n";
         }
+        if (startArgs.Contains("--downloadtest"))
+        {
+            // a page with <a id=l href="x.pdf" download>: a link download must still follow the settings
+            await cw.ExecuteScriptAsync("document.getElementById('l').click()");
+            await Task.Delay(5000);
+            var dir = Directory.Exists(settings.DownloadFolder) ? settings.DownloadFolder : KnownFolders.Downloads;
+            keys += $"download: files in folder -> {string.Join(", ", Directory.GetFiles(dir).Select(Path.GetFileName))}\n";
+        }
         if (startArgs.Contains("--cookietest"))
         {
             await LogGoogleCookies("test");
@@ -1879,11 +1887,32 @@ public partial class MainForm : Form
 
     // ---------- Downloads ----------
 
+    /// <summary>The tab shows this very PDF, so the download is the viewer's own Save.</summary>
+    static bool IsPdfViewerSave(CoreWebView2 src, CoreWebView2DownloadStartingEventArgs e)
+    {
+        try
+        {
+            var op = e.DownloadOperation;
+            bool pdf = string.Equals(op.MimeType, "application/pdf", StringComparison.OrdinalIgnoreCase)
+                       || e.ResultFilePath.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase);
+            return pdf && Uri.TryCreate(op.Uri, UriKind.Absolute, out var a) && Uri.TryCreate(src.Source, UriKind.Absolute, out var b)
+                   && Uri.Compare(a, b, UriComponents.HttpRequestUrl, UriFormat.Unescaped, StringComparison.Ordinal) == 0;
+        }
+        catch { return false; }
+    }
+
     void OnDownloadStarting(object? sender, CoreWebView2DownloadStartingEventArgs e)
     {
         var name = Path.GetFileName(e.ResultFilePath);
         if (string.IsNullOrEmpty(name)) name = "descarcare";
         var folder = Directory.Exists(settings.DownloadFolder) ? settings.DownloadFolder : KnownFolders.Downloads;
+
+        // Saving from the PDF viewer's own toolbar (or Ctrl+S on a PDF): the engine has already shown
+        // its Save As dialog, and ResultFilePath is where the owner chose. Asking again was the
+        // "asks twice" bug of 2026-11-18. A link to a PDF is not affected: its Uri isn't the page's.
+        bool viewerSave = sender is CoreWebView2 src && IsPdfViewerSave(src, e);
+        DiagLog.Write($"download {Bookmark.HostOf(e.DownloadOperation.Uri)} mime={e.DownloadOperation.MimeType} pdfViewerSave={viewerSave} ask={settings.AskWhereToSave}");
+        if (viewerSave) return;
 
         if (!settings.AskWhereToSave)
         {

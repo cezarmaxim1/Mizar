@@ -51,6 +51,7 @@ For modules, data flow and design decisions, read `ARCHITECTURE.md`. For what's 
     | `--monitortest` | DPI and wrong-monitor repair; needs 2 monitors |
     | `--scheme light\|dark\|auto` | page colour scheme |
     | `--cookietest` | writes a `cookies test google:` line to `diag.log` |
+    | `--downloadtest` | clicks `#l` (a link with `download`); the file must land in `DownloadFolder` |
 
   - These need a local page served with `python -m http.server`:
 

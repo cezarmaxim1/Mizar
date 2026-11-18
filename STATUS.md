@@ -90,6 +90,8 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
 
 ## Known bugs and loose ends
 
+- **PDF save asked twice** (2026-11-18, with `AskWhereToSave` on): the PDF viewer's Save shows the engine's dialog, then `OnDownloadStarting` showed Mizar's. Now `IsPdfViewerSave` (PDF whose download Uri is the tab's own page) keeps the engine's choice. Each download logs `download <host> mime= pdfViewerSave= ask=`. Link downloads verified with `--downloadtest`; the viewer case awaits the owner's check: if it still asks twice, read the `download` line.
+
 - **Signed out of Google at every restart** (since 2026-11-16, Google only; other sites stay signed in; the account chooser is empty too, so every Google cookie is gone).
   - Facts so far: no Mizar code deletes cookies (only the Settings buttons); the profile's `Cookies` file is saved normally.
   - Suspect, unproven: third-party cookie blocking, turned back on 2026-11-16 17:26.
