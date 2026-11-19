@@ -8,12 +8,18 @@ public partial class MainForm : Form
     readonly Settings settings = Settings.Load();
     readonly BookmarkStore bookmarks = BookmarkStore.Load();
     readonly bool firstRun = !BookmarkStore.Exists;
-    /// <summary>
-    /// Hidden tabs get MemoryUsageTargetLevel.Low. OFF from 2026-11-19 as a Gmail experiment
-    /// (STATUS.md): does Gmail's service worker still get stuck "starting" without it? Turn it back
-    /// on when the experiment ends.
-    /// </summary>
-    const bool LowMemoryForHiddenTabs = false;
+    /// <summary>Hidden tabs get MemoryUsageTargetLevel.Low (ruled out for the Gmail stall on 2026-11-19).</summary>
+    const bool LowMemoryForHiddenTabs = true;
+
+    // Gmail experiment from 2026-11-19 18:15 (STATUS.md): three Mizar-only behaviours off at once.
+    // If Gmail still stalls, all three are ruled out: set them back to true. If it stops, turn them
+    // back on one at a time to find which one it was.
+    /// <summary>At start, also clear the engine's own browsing/download history (Mizar's history.json is cleared regardless).</summary>
+    const bool ClearEngineHistoryAtStart = false;
+    /// <summary>Background tabs turn on CDP Network to track requests in flight, so they aren't put to sleep mid-request.</summary>
+    const bool BackgroundNetWatch = false;
+    /// <summary>Engine flag --enable-features=HttpsUpgrades (HTTPS-First).</summary>
+    const bool HttpsUpgrades = false;
 
     Task<CoreWebView2Environment>? envTask;
     /// <summary>Bumped when the engine is restarted, so late events from the dead engine are ignored.</summary>
@@ -190,7 +196,9 @@ public partial class MainForm : Form
             await LogGoogleCookies("start");
             if (settings.ClearHistoryOnExit)
             {
-                await ClearData(CoreWebView2BrowsingDataKinds.BrowsingHistory | CoreWebView2BrowsingDataKinds.DownloadHistory);
+                if (ClearEngineHistoryAtStart)
+                    await ClearData(CoreWebView2BrowsingDataKinds.BrowsingHistory | CoreWebView2BrowsingDataKinds.DownloadHistory);
+                else history.Clear();
                 await LogGoogleCookies("after history wipe");
             }
 
@@ -454,7 +462,7 @@ public partial class MainForm : Form
             if (cw.IsDocumentPlayingAudio) continue;
             // never freeze a page in the middle of a request (see NetRepair.cs): start watching
             // the tab's requests if we weren't yet, and wait while any of them is still loading
-            if (!t.NetWatch) { await SetNetWatch(t, true); continue; }
+            if (BackgroundNetWatch && !t.NetWatch) { await SetNetWatch(t, true); continue; }
             var now = DateTime.UtcNow;
             foreach (var kv in t.InFlight.Where(kv => (now - kv.Value).TotalSeconds > 60).ToList())
                 t.InFlight.Remove(kv.Key);
@@ -1163,9 +1171,11 @@ public partial class MainForm : Form
     /// </summary>
     CoreWebView2EnvironmentOptions EngineOptions()
     {
-        var args = new List<string> { "--enable-features=HttpsUpgrades" };
+        var args = new List<string>();
+        if (HttpsUpgrades) args.Add("--enable-features=HttpsUpgrades");
         if (settings.BlockThirdPartyCookies) args.Add("--test-third-party-cookie-phaseout");
-        DiagLog.Write($"engine options: 3pcBlock={settings.BlockThirdPartyCookies} trackingPrevention=off hiddenLowMemory={(LowMemoryForHiddenTabs ? "on" : "off")}");
+        DiagLog.Write($"engine options: 3pcBlock={settings.BlockThirdPartyCookies} trackingPrevention=off hiddenLowMemory={On(LowMemoryForHiddenTabs)} clearEngineHistory={On(ClearEngineHistoryAtStart)} netWatch={On(BackgroundNetWatch)} httpsUpgrades={On(HttpsUpgrades)}");
+        static string On(bool b) => b ? "on" : "off";
         return new CoreWebView2EnvironmentOptions(string.Join(' ', args))
         {
             // Edge's own tracking prevention is off: Mizar has its own blocker (AdBlocker), and Edge's

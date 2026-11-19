@@ -65,7 +65,7 @@ public partial class MainForm
     async Task SetNetWatch(BrowserTab tab, bool on)
     {
         var cw = tab.Core;
-        if (cw == null || tab.NetWatch == on) return;
+        if (cw == null || tab.NetWatch == on || (on && !BackgroundNetWatch)) return;
         tab.NetWatch = on;
         tab.InFlight.Clear();
         try

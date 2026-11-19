@@ -80,7 +80,10 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
    - `no worker version reported` → the engine failed to start the worker.
    - Check that no `engine restart` line follows the heal.
 3. **Remove the remaining Mizar-only differences, one at a time, 2–3 days each,** and note each start date here:
-   - **Running now: (a) off since 2026-11-19 18:05** (`MainForm.LowMemoryForHiddenTabs = false`; `diag.log` start line shows `hiddenLowMemory=off`). Stalls came every 1–2.5 days, so give each test 4–5 days. If Gmail stalls with it off, turn it back on and move to the next suspect.
+   - **(a) ruled out:** with it off, Gmail stalled again on 2026-11-19 18:07, 2.5 min after start (same black box: `running=starting`). It is back on. Two stalls 8 min apart, the second right after a restart that followed a heal (fresh worker registration), so stalls can come within minutes.
+   - **Running now: (b), (c) and (d) all off since 2026-11-19 18:10** (owner's choice: one test for three). Switches in `MainForm.cs`: `ClearEngineHistoryAtStart`, `BackgroundNetWatch`, `HttpsUpgrades`. The `diag.log` start line shows `clearEngineHistory=off netWatch=off httpsUpgrades=off`. Meanwhile: background tabs may sleep mid-request, and `http://` isn't upgraded to HTTPS.
+     - Stall again → all three ruled out: set them back to `true`. Next look at what remains Mizar-only: tab sleeping, the ad filter (`AddWebResourceRequestedFilter`), the injected `ShortcutScript`, CDP sessions on pages, and the Edge control test.
+     - No stall for 4–5 days → turn them back on one at a time.
    - (a) `MemoryUsageTargetLevel.Low` for hidden tabs;
    - (b) the startup `ClearData(BrowsingHistory | DownloadHistory)`;
    - (c) the background CDP `Network.enable` watch;
