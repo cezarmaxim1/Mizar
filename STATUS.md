@@ -71,6 +71,7 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
 ### Next steps, in order
 
 1. **Wait for the next stall.** The heal runs by itself; Gmail may first ask "Reload site?", answer Reload.
+   - As of 2026-11-19 09:30: no Gmail `slow load`, heal or engine death since 2026-11-17 08:52 (about 48 h, several restarts).
 2. **Read the evidence** in `%LOCALAPPDATA%\Mizar\diag.log`: the `slow load`, `blackbox`, `heal`, `process failed` and `engine restart` lines around the stall.
    - Expected: `running=starting` again.
    - `running=running` with fetches timing out → the worker's own logic is waiting on something.
@@ -91,6 +92,7 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
 ## Known bugs and loose ends
 
 - **PDF save asked twice** (2026-11-18, with `AskWhereToSave` on): the PDF viewer's Save shows the engine's dialog, then `OnDownloadStarting` showed Mizar's. Now `IsPdfViewerSave` (PDF whose download Uri is the tab's own page) keeps the engine's choice. Each download logs `download <host> mime= pdfViewerSave= ask=`. Link downloads verified with `--downloadtest`; the viewer case awaits the owner's check: if it still asks twice, read the `download` line.
+  - 2026-11-19: a real save from the viewer logged `pdfViewerSave=True ask=True`, so Mizar skipped its own dialog. An image download the same day correctly logged `pdfViewerSave=False`.
 
 - **Signed out of Google at every restart** (since 2026-11-16, Google only; other sites stay signed in; the account chooser is empty too, so every Google cookie is gone).
   - Facts so far: no Mizar code deletes cookies (only the Settings buttons); the profile's `Cookies` file is saved normally.
@@ -104,6 +106,7 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
     - present at `start` but gone `after history wipe` → `ClearData` is the cause.
   - Verified on an isolated profile: the lines are written and closing still works.
   - 2026-11-17 11:28 (reinstall, closed with `WM_CLOSE`): all 30 Google cookies present at `start`, dated, kept after the wipe; the owner **stayed signed in**. Second suspect: an unclean end. The engine crashed on 2026-11-16 17:19 and 2026-11-17 08:52; Google rotates `__Secure-1PSIDTS` often, and a crash may leave an older copy on disk that Google then rejects. Watch whether a sign-out follows a `process failed BrowserProcessExited` or a start with no `close` line before it.
+  - 2026-11-17 to 11-19: every `close` → `start` pair kept 30–31 Google cookies, with no engine death. The owner hasn't reported a sign-out since.
   - Fallback experiment for the owner: turn cookie blocking off, sign in, restart twice.
 
 - **Wrong URL in the address bar:** it once showed a Facebook URL while the Gmail tab was active. Not reproduced, not investigated.
