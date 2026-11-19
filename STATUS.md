@@ -80,6 +80,7 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
    - `no worker version reported` → the engine failed to start the worker.
    - Check that no `engine restart` line follows the heal.
 3. **Remove the remaining Mizar-only differences, one at a time, 2–3 days each,** and note each start date here:
+   - **Running now: (a) off since 2026-11-19 18:05** (`MainForm.LowMemoryForHiddenTabs = false`; `diag.log` start line shows `hiddenLowMemory=off`). Stalls came every 1–2.5 days, so give each test 4–5 days. If Gmail stalls with it off, turn it back on and move to the next suspect.
    - (a) `MemoryUsageTargetLevel.Low` for hidden tabs;
    - (b) the startup `ClearData(BrowsingHistory | DownloadHistory)`;
    - (c) the background CDP `Network.enable` watch;

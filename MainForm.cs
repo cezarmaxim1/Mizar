@@ -8,6 +8,13 @@ public partial class MainForm : Form
     readonly Settings settings = Settings.Load();
     readonly BookmarkStore bookmarks = BookmarkStore.Load();
     readonly bool firstRun = !BookmarkStore.Exists;
+    /// <summary>
+    /// Hidden tabs get MemoryUsageTargetLevel.Low. OFF from 2026-11-19 as a Gmail experiment
+    /// (STATUS.md): does Gmail's service worker still get stuck "starting" without it? Turn it back
+    /// on when the experiment ends.
+    /// </summary>
+    const bool LowMemoryForHiddenTabs = false;
+
     Task<CoreWebView2Environment>? envTask;
     /// <summary>Bumped when the engine is restarted, so late events from the dead engine are ignored.</summary>
     int engineGen;
@@ -980,7 +987,7 @@ public partial class MainForm : Form
 
         var cw = tab.View.CoreWebView2;
         Wire(tab, cw);
-        if (tab != active) cw.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
+        if (tab != active && LowMemoryForHiddenTabs) cw.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
 
         if (nw != null)
         {
@@ -1158,7 +1165,7 @@ public partial class MainForm : Form
     {
         var args = new List<string> { "--enable-features=HttpsUpgrades" };
         if (settings.BlockThirdPartyCookies) args.Add("--test-third-party-cookie-phaseout");
-        DiagLog.Write($"engine options: 3pcBlock={settings.BlockThirdPartyCookies} trackingPrevention=off");
+        DiagLog.Write($"engine options: 3pcBlock={settings.BlockThirdPartyCookies} trackingPrevention=off hiddenLowMemory={(LowMemoryForHiddenTabs ? "on" : "off")}");
         return new CoreWebView2EnvironmentOptions(string.Join(' ', args))
         {
             // Edge's own tracking prevention is off: Mizar has its own blocker (AdBlocker), and Edge's
@@ -1603,7 +1610,7 @@ public partial class MainForm : Form
         {
             prev.View.Visible = false;
             prev.LastActive = DateTime.Now;
-            if (prev.Core != null) prev.Core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
+            if (prev.Core != null && LowMemoryForHiddenTabs) prev.Core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
             _ = SetNetWatch(prev, true);
         }
         SyncStrip();
