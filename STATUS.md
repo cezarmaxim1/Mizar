@@ -72,6 +72,8 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
 
 1. **Wait for the next stall.** The heal runs by itself; Gmail may first ask "Reload site?", answer Reload.
    - As of 2026-11-19 09:30: no Gmail `slow load`, heal or engine death since 2026-11-17 08:52 (about 48 h, several restarts).
+   - **Recurred 2026-11-19 17:58**, after a 2.5-day pause, about 4 h after start: `img=132 imgPending=132`, `tabs=4 asleep=0`. Black box identical to 11-17: fetch through the worker `TIMEOUT`, bypassing it `200`, storage answers, `running=starting`. The heal worked in 4 s with no engine death (`unregister ok:1, removed ok`; 10 s later `imgPending=0 sw=none`). So the stall is reproducible in kind, the new reset is safe, and the root cause is still "Gmail's worker never finishes starting, only in Mizar".
+   - No visible link to tab sleeping: Gmail itself slept only on 11-15, 11-17 13:06 and 11-18, never right before a stall, and nothing was asleep at three of the four stalls.
 2. **Read the evidence** in `%LOCALAPPDATA%\Mizar\diag.log`: the `slow load`, `blackbox`, `heal`, `process failed` and `engine restart` lines around the stall.
    - Expected: `running=starting` again.
    - `running=running` with fetches timing out → the worker's own logic is waiting on something.
