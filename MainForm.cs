@@ -489,11 +489,12 @@ public partial class MainForm : Form
 
     void BuildNav()
     {
-        btnBack = IconButton(GBack, "Înapoi (Alt+←)", () => active?.Core?.GoBack());
-        btnFwd = IconButton(GFwd, "Înainte (Alt+→)", () => active?.Core?.GoForward());
+        btnBack = IconButton(GBack, "Înapoi (Alt+←)", () => { active?.View.Focus(); active?.Core?.GoBack(); });
+        btnFwd = IconButton(GFwd, "Înainte (Alt+→)", () => { active?.View.Focus(); active?.Core?.GoForward(); });
         btnReload = IconButton(GReload, "Reîncarcă (F5)", () =>
         {
             if (active?.Core == null) return;
+            active.View.Focus();
             if (active.IsLoading) active.Core.Stop(); else active.Core.Reload();
         });
         btnHome = IconButton(GHome, "Pagina de pornire", () => Navigate(settings.HomePage));
@@ -522,15 +523,15 @@ public partial class MainForm : Form
             {
                 e.SuppressKeyPress = true;
                 if (suggest.Visible) { HideSuggestions(); return; }
-                address.Text = active?.Url ?? "";
+                UpdateAddress(force: true);
                 active?.View.Focus();
             }
         };
         // only text the user types (address box focused) brings up suggestions
-        address.TextChanged += (_, _) => { if (address.Focused) UpdateSuggestions(); };
+        address.TextChanged += (_, _) => { if (address.Focused && !settingAddress) UpdateSuggestions(); };
         address.Enter += (_, _) => { selectAllOnClick = true; BeginInvoke(address.SelectAll); };
         address.MouseUp += (_, _) => { if (selectAllOnClick) { address.SelectAll(); selectAllOnClick = false; } };
-        address.Leave += (_, _) => { selectAllOnClick = false; HideSuggestions(); UpdateAddress(); };
+        address.Leave += (_, _) => { selectAllOnClick = false; HideSuggestions(); UpdateAddress(force: true); };
 
         nav.Dock = DockStyle.Fill;
         nav.Height = S(38);
@@ -1802,10 +1803,10 @@ public partial class MainForm : Form
             _ = SetNetWatch(prev, true);
         }
         SyncStrip();
-        UpdateAddress();
+        UpdateAddress(force: true);
         UpdateNav();
         UpdateTitle();
-        if (!address.Focused) tab.View.Focus();
+        if (tab.Url != "about:blank") tab.View.Focus();
     }
 
     void SyncStrip()
@@ -1878,13 +1879,18 @@ public partial class MainForm : Form
 
     void UpdateTitle() => Text = active == null ? "Mizar" : $"{active.Title} - Mizar";
 
-    void UpdateAddress()
+    bool settingAddress;
+
+    void UpdateAddress(bool force = false)
     {
         UpdateSecurity();
-        if (address.Focused) return;
-        if (active?.Internal == "history") { address.Text = "Istoric"; return; }
-        var u = active?.Url ?? "";
-        address.Text = u == "about:blank" ? "" : u;
+        if (address.Focused && !force) return;
+        string next = active?.Internal == "history" ? "Istoric"
+            : (active?.Url ?? "") is var u && u == "about:blank" ? "" : u;
+        if (address.Text == next) return;
+        settingAddress = true;
+        try { address.Text = next; }
+        finally { settingAddress = false; }
     }
 
     /// <summary>Padlock / "Nesigur" indicator for the active tab.</summary>
@@ -2012,7 +2018,10 @@ public partial class MainForm : Form
     void Navigate(string input)
     {
         if (active?.Core == null) return;
-        try { active.Core.Navigate(Normalize(input)); }
+        HideSuggestions();
+        active.View.Focus();
+        var target = Normalize(input);
+        try { active.Core.Navigate(target); }
         catch { active.Core.Navigate("https://www.google.com/search?q=" + Uri.EscapeDataString(input)); }
     }
 

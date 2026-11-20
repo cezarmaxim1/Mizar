@@ -117,7 +117,7 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
   - 2026-11-17 to 11-19: every `close` → `start` pair kept 30–31 Google cookies, with no engine death. The owner hasn't reported a sign-out since.
   - Fallback experiment for the owner: turn cookie blocking off, sign in, restart twice.
 
-- **Wrong URL in the address bar:** it once showed a Facebook URL while the Gmail tab was active. Not reproduced, not investigated.
+- **Wrong URL in the address bar (fixed 2026-11-20):** `UpdateAddress()` returned early whenever `address.Focused` was true, and clicking a non-focusable `TabStrip` tab, bookmark bar item, or nav button never moved focus out of `address`. Now `Activate` forces `UpdateAddress(force: true)` and moves focus to web tabs (`tab.Url != "about:blank"`), and `Navigate`/Back/Forward/Reload unfocus `address` so the active page's URL is always shown.
 - **English buttons:** the Yes/No buttons in `MessageBox` dialogs are in English (system strings).
 - **Signing key backup:** the owner should keep a copy of `%USERPROFILE%\.mizar-release\` somewhere safe.
 - **Files to delete by hand:** `F:\mizar-netlog.json` (contains browsing URLs), `F:\mizar-copylog.cmd`, `F:\mizar-diag-copy.log`, and the `mz-*` folders in `%TEMP%`.
