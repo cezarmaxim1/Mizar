@@ -99,6 +99,8 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
 
 ## Known bugs and loose ends
 
+- **Focus ring on the page's first link after switching tabs** (2026-11-20, e.g. "Skip to main content" on Reddit). Cause, read from the WinForms WebView2 IL: `Select(directed: true)` stores `MoveFocus(Next)`, and hiding the focused old WebView made WinForms select the next control that way. `Activate` now focuses the new tab before hiding the old one. Not reproducible in a self-test (no foreground window); awaits the owner's check.
+
 - **PDF save asked twice** (2026-11-18, with `AskWhereToSave` on): the PDF viewer's Save shows the engine's dialog, then `OnDownloadStarting` showed Mizar's. Now `IsPdfViewerSave` (PDF whose download Uri is the tab's own page) keeps the engine's choice. Each download logs `download <host> mime= pdfViewerSave= ask=`. Link downloads verified with `--downloadtest`; the viewer case awaits the owner's check: if it still asks twice, read the `download` line.
   - 2026-11-19: a real save from the viewer logged `pdfViewerSave=True ask=True`, so Mizar skipped its own dialog. An image download the same day correctly logged `pdfViewerSave=False`.
 

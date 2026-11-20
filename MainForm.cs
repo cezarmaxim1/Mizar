@@ -1444,6 +1444,21 @@ public partial class MainForm : Form
             await Task.Delay(40000); // slow-load check (6 s in this test) + black box + heal + reload
             keys += $"heal: after -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(img))}\n";
         }
+        if (startArgs.Contains("--focustest"))
+        {
+            // switching back to a tab must not put a keyboard focus ring on the page's first link
+            const string probe = "(() => { const a = document.activeElement; return (a ? a.tagName : 'none') + ' focusVisible=' + (a && a !== document.body ? a.matches(':focus-visible') : false); })()";
+            var first = active!;
+            Activate(); first.View.Focus(); // the real case: Mizar is the foreground window and the page has focus
+            await Task.Delay(500);
+            keys += $"focus: foreground={ActiveForm == this} firstHasFocus={first.View.ContainsFocus}\n";
+            await CreateTab(cw.Source);      // a second page with links, which takes the focus
+            await Task.Delay(2500);
+            keys += $"focus: second has focus={active!.View.ContainsFocus}\n";
+            Activate(first);
+            await Task.Delay(1500);
+            keys += $"focus: after switch back -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(probe))}\n";
+        }
         if (startArgs.Contains("--downloadtest"))
         {
             // a page with <a id=l href="x.pdf" download>: a link download must still follow the settings
@@ -1797,6 +1812,14 @@ public partial class MainForm : Form
         _ = SetNetWatch(tab, false);
         if (prev != null && !prev.View.IsDisposed)
         {
+            // Give the new tab the focus BEFORE hiding the old one. Hiding the focused WebView makes
+            // WinForms pick the next control with a directed Select, which the WinForms WebView2 turns
+            // into MoveFocus(Next): the page then focuses its first link ("Skip to main content")
+            // with a visible focus ring (owner's report, 2026-11-20).
+            if (prev.View.ContainsFocus)
+            {
+                if (tab.Url != "about:blank") tab.View.Focus(); else address.Focus();
+            }
             prev.View.Visible = false;
             prev.LastActive = DateTime.Now;
             if (prev.Core != null && LowMemoryForHiddenTabs) prev.Core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
