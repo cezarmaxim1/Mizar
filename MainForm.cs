@@ -11,15 +11,21 @@ public partial class MainForm : Form
     /// <summary>Hidden tabs get MemoryUsageTargetLevel.Low (ruled out for the Gmail stall on 2026-11-19).</summary>
     const bool LowMemoryForHiddenTabs = true;
 
-    // Gmail experiment from 2026-11-19 18:15 (STATUS.md): three Mizar-only behaviours off at once.
-    // If Gmail still stalls, all three are ruled out: set them back to true. If it stops, turn them
-    // back on one at a time to find which one it was.
+    // These three were ruled out for the Gmail stall on 2026-11-20 (stalled with all three off).
     /// <summary>At start, also clear the engine's own browsing/download history (Mizar's history.json is cleared regardless).</summary>
-    const bool ClearEngineHistoryAtStart = false;
+    const bool ClearEngineHistoryAtStart = true;
     /// <summary>Background tabs turn on CDP Network to track requests in flight, so they aren't put to sleep mid-request.</summary>
-    const bool BackgroundNetWatch = false;
+    const bool BackgroundNetWatch = true;
     /// <summary>Engine flag --enable-features=HttpsUpgrades (HTTPS-First).</summary>
-    const bool HttpsUpgrades = false;
+    const bool HttpsUpgrades = true;
+
+    // Gmail experiment from 2026-11-20 (STATUS.md): tab sleeping and the ad/tracker filter off at
+    // once (owner's choice). Stall again -> both ruled out, set back to true. No stall for 4-5 days ->
+    // turn them back on one at a time.
+    /// <summary>Background tabs are suspended (TrySuspendAsync) after SleepAfter.</summary>
+    const bool TabSleeping = false;
+    /// <summary>Ad and tracker requests are filtered (AddWebResourceRequestedFilter per AdBlocker domain).</summary>
+    const bool AdFilter = false;
 
     Task<CoreWebView2Environment>? envTask;
     /// <summary>Bumped when the engine is restarted, so late events from the dead engine are ignored.</summary>
@@ -454,6 +460,7 @@ public partial class MainForm : Form
 
     async Task SleepInactiveTabs()
     {
+        if (!TabSleeping) return;
         foreach (var t in tabs.ToList())
         {
             var cw = t.Core;
@@ -1115,7 +1122,7 @@ public partial class MainForm : Form
 
         // built-in pages (history, crash notice) are served locally and never reach the network
         cw.AddWebResourceRequestedFilter(InternalPages.Base + "*", CoreWebView2WebResourceContext.All);
-        foreach (var pattern in AdBlocker.FilterPatterns())
+        if (AdFilter) foreach (var pattern in AdBlocker.FilterPatterns())
             // Document only (pages and their frames), NOT service/shared workers: a worker filter makes
             // the engine route worker requests through this window, and Gmail's service worker was found
             // wedged on 2026-11-15 with all its image/font fetches pending (see NetRepair.cs).
@@ -1174,7 +1181,7 @@ public partial class MainForm : Form
         var args = new List<string>();
         if (HttpsUpgrades) args.Add("--enable-features=HttpsUpgrades");
         if (settings.BlockThirdPartyCookies) args.Add("--test-third-party-cookie-phaseout");
-        DiagLog.Write($"engine options: 3pcBlock={settings.BlockThirdPartyCookies} trackingPrevention=off hiddenLowMemory={On(LowMemoryForHiddenTabs)} clearEngineHistory={On(ClearEngineHistoryAtStart)} netWatch={On(BackgroundNetWatch)} httpsUpgrades={On(HttpsUpgrades)}");
+        DiagLog.Write($"engine options: 3pcBlock={settings.BlockThirdPartyCookies} trackingPrevention=off hiddenLowMemory={On(LowMemoryForHiddenTabs)} clearEngineHistory={On(ClearEngineHistoryAtStart)} netWatch={On(BackgroundNetWatch)} httpsUpgrades={On(HttpsUpgrades)} tabSleeping={On(TabSleeping)} adFilter={On(AdFilter)}");
         static string On(bool b) => b ? "on" : "off";
         return new CoreWebView2EnvironmentOptions(string.Join(' ', args))
         {

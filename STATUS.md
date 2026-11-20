@@ -81,8 +81,10 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
    - Check that no `engine restart` line follows the heal.
 3. **Remove the remaining Mizar-only differences, one at a time, 2–3 days each,** and note each start date here:
    - **(a) ruled out:** with it off, Gmail stalled again on 2026-11-19 18:07, 2.5 min after start (same black box: `running=starting`). It is back on. Two stalls 8 min apart, the second right after a restart that followed a heal (fresh worker registration), so stalls can come within minutes.
-   - **Running now: (b), (c) and (d) all off since 2026-11-19 18:10** (owner's choice: one test for three). Switches in `MainForm.cs`: `ClearEngineHistoryAtStart`, `BackgroundNetWatch`, `HttpsUpgrades`. The `diag.log` start line shows `clearEngineHistory=off netWatch=off httpsUpgrades=off`. Meanwhile: background tabs may sleep mid-request, and `http://` isn't upgraded to HTTPS.
-     - Stall again → all three ruled out: set them back to `true`. Next look at what remains Mizar-only: tab sleeping, the ad filter (`AddWebResourceRequestedFilter`), the injected `ShortcutScript`, CDP sessions on pages, and the Edge control test.
+   - **(b), (c), (d) ruled out:** all three off from 2026-11-19 18:10; Gmail stalled on 2026-11-20 08:12 (same black box, heal clean; Mizar had been open overnight). All three are back on.
+   - **Engine versions match:** WebView2 Runtime and Edge are both 157.0.4341.60, so Edge is a fair control. **The owner keeps Gmail open in Edge from 2026-11-20.** If Edge stalls too, the cause is the engine or the account, not Mizar.
+   - **Running now: tab sleeping and the ad/tracker filter both off since 2026-11-20 08:17** (owner's choice). Switches `TabSleeping`, `AdFilter` in `MainForm.cs`; `diag.log` start line shows `tabSleeping=off adFilter=off`. Meanwhile ads aren't blocked and background tabs use more RAM.
+     - Stall again → both ruled out. Remaining Mizar-only things: the injected `ShortcutScript`, CDP calls on pages (`zoomPoll`, probes), `PerMonitorV2`/hosting, the user agent; compare with the Edge result.
      - No stall for 4–5 days → turn them back on one at a time.
    - (a) `MemoryUsageTargetLevel.Low` for hidden tabs;
    - (b) the startup `ClearData(BrowsingHistory | DownloadHistory)`;
