@@ -176,12 +176,21 @@ public partial class MainForm : Form
 
             // last session's tabs come back as placeholders; each loads only when first shown (saves RAM)
             int restoreActive = -1;
-            if (settings.RestoreSession)
+            SessionData? restoreData = null;
+            if (File.Exists(AppPaths.ReopenOnceFile))
             {
-                var session = SessionData.Load();
-                foreach (var t in session.Tabs)
+                restoreData = SessionData.Load(AppPaths.ReopenOnceFile);
+                try { File.Delete(AppPaths.ReopenOnceFile); } catch { }
+            }
+            else if (settings.RestoreSession)
+            {
+                restoreData = SessionData.Load();
+            }
+            if (restoreData != null)
+            {
+                foreach (var t in restoreData.Tabs)
                     if (!string.IsNullOrWhiteSpace(t.Url)) AddLazyTab(t.Url, t.Title);
-                if (tabs.Count > 0) restoreActive = Math.Clamp(session.Active, 0, tabs.Count - 1);
+                if (tabs.Count > 0) restoreActive = Math.Clamp(restoreData.Active, 0, tabs.Count - 1);
             }
 
             if (url != null) await CreateTab(url);
@@ -678,6 +687,24 @@ public partial class MainForm : Form
 
     bool sessionReady; // don't overwrite the saved session before it has been restored
 
+    SessionData BuildSessionData()
+    {
+        var data = new SessionData();
+        foreach (var t in tabs)
+        {
+            if (string.IsNullOrWhiteSpace(t.Url) || t.Url == "about:blank" || InternalPages.IsInternal(t.Url)) continue;
+            if (t == active) data.Active = data.Tabs.Count;
+            data.Tabs.Add(new SessionTab { Url = t.Url, Title = t.Title });
+        }
+        return data;
+    }
+
+    void SaveReopenOnce()
+    {
+        if (IsSelfTest) return;
+        BuildSessionData().Save(AppPaths.ReopenOnceFile);
+    }
+
     void SaveSession()
     {
         if (!sessionDirty || !sessionReady || IsSelfTest) return;
@@ -688,14 +715,7 @@ public partial class MainForm : Form
             try { File.Delete(AppPaths.SessionFile); } catch { }
             return;
         }
-        var data = new SessionData();
-        foreach (var t in tabs)
-        {
-            if (string.IsNullOrWhiteSpace(t.Url) || t.Url == "about:blank" || InternalPages.IsInternal(t.Url)) continue;
-            if (t == active) data.Active = data.Tabs.Count;
-            data.Tabs.Add(new SessionTab { Url = t.Url, Title = t.Title });
-        }
-        data.Save();
+        BuildSessionData().Save();
     }
 
     /// <summary>A second Mizar launch (e.g. a link clicked in another app) lands here (thread-safe).</summary>
@@ -795,6 +815,58 @@ public partial class MainForm : Form
         }
     }
 
+    void OnBarItemMouseDown(ToolStripItem it, MouseEventArgs e)
+    {
+        suppressBarClick = false;
+        if (e.Button != MouseButtons.Left || it.Placement != ToolStripItemPlacement.Main || it.Tag is not Bookmark) return;
+        dragItem = it;
+        dragStart = new Point(it.Bounds.Left + e.X, it.Bounds.Top + e.Y);
+        dragActive = false;
+        dragDropIndex = -1;
+        dragInsertX = -1;
+    }
+
+    void OnBarMouseMove(Point barPt, MouseButtons buttons)
+    {
+        if (dragItem == null) return;
+        if (buttons != MouseButtons.Left) { CancelBarDrag(); return; }
+        if (!dragActive)
+        {
+            if (Math.Abs(barPt.X - dragStart.X) < S(6) && Math.Abs(barPt.Y - dragStart.Y) < S(6)) return;
+            dragActive = true;
+            if (dragItem is ToolStripDropDownButton dd) dd.HideDropDown();
+            bar.Capture = true;
+            bar.Cursor = Cursors.SizeWE;
+        }
+        UpdateBarDropTarget(barPt.X);
+    }
+
+    bool FinishBarDrag()
+    {
+        if (!dragActive)
+        {
+            dragItem = null;
+            return false;
+        }
+        var dragged = dragItem?.Tag as Bookmark;
+        int dropIdx = dragDropIndex;
+        suppressBarClick = true;
+        dragActive = false;
+        CancelBarDrag();
+        if (dragged != null && dropIdx >= 0)
+        {
+            int fromIdx = bookmarks.Bar.IndexOf(dragged);
+            if (fromIdx >= 0 && dropIdx != fromIdx && dropIdx != fromIdx + 1)
+            {
+                int toIdx = dropIdx > fromIdx ? dropIdx - 1 : dropIdx;
+                bookmarks.Bar.RemoveAt(fromIdx);
+                bookmarks.Bar.Insert(toIdx, dragged);
+                bookmarks.NotifyChanged();
+            }
+        }
+        return true;
+    }
+
     void BuildBookmarkBar()
     {
         bar.Dock = DockStyle.Fill;
@@ -808,34 +880,7 @@ public partial class MainForm : Form
         bar.CanOverflow = true;
         bar.ShowItemToolTips = true;
         bar.Visible = settings.ShowBookmarksBar;
-        bar.MouseDown += (_, e) =>
-        {
-            suppressBarClick = false;
-            if (e.Button != MouseButtons.Left) return;
-            var it = bar.GetItemAt(e.Location);
-            if (it?.Tag is Bookmark && it.Placement == ToolStripItemPlacement.Main)
-            {
-                dragItem = it;
-                dragStart = e.Location;
-                dragActive = false;
-                dragDropIndex = -1;
-                dragInsertX = -1;
-            }
-        };
-        bar.MouseMove += (_, e) =>
-        {
-            if (dragItem == null) return;
-            if (e.Button != MouseButtons.Left) { CancelBarDrag(); return; }
-            if (!dragActive)
-            {
-                if (Math.Abs(e.X - dragStart.X) < S(6) && Math.Abs(e.Y - dragStart.Y) < S(6)) return;
-                dragActive = true;
-                if (dragItem is ToolStripDropDownButton dd) dd.HideDropDown();
-                bar.Capture = true;
-                bar.Cursor = Cursors.SizeWE;
-            }
-            UpdateBarDropTarget(e.X);
-        };
+        bar.MouseMove += (_, e) => OnBarMouseMove(e.Location, e.Button);
         bar.MouseCaptureChanged += (_, _) => { if (dragActive) CancelBarDrag(); };
         bar.Paint += (_, e) =>
         {
@@ -847,27 +892,7 @@ public partial class MainForm : Form
         };
         bar.MouseUp += (_, e) =>
         {
-            if (dragActive)
-            {
-                var dragged = dragItem?.Tag as Bookmark;
-                int dropIdx = dragDropIndex;
-                suppressBarClick = true;
-                dragActive = false;
-                CancelBarDrag();
-                if (dragged != null && dropIdx >= 0)
-                {
-                    int fromIdx = bookmarks.Bar.IndexOf(dragged);
-                    if (fromIdx >= 0 && dropIdx != fromIdx && dropIdx != fromIdx + 1)
-                    {
-                        int toIdx = dropIdx > fromIdx ? dropIdx - 1 : dropIdx;
-                        bookmarks.Bar.RemoveAt(fromIdx);
-                        bookmarks.Bar.Insert(toIdx, dragged);
-                        bookmarks.NotifyChanged();
-                    }
-                }
-                return;
-            }
-            dragItem = null;
+            if (FinishBarDrag()) return;
             if (e.Button != MouseButtons.Right || bar.GetItemAt(e.Location) != null) return;
             var cm = NewMenu();
             cm.Items.Add("Adaugă pagina curentă", null, (_, _) => ToggleBookmark());
@@ -895,6 +920,8 @@ public partial class MainForm : Form
         {
             var other = new ToolStripDropDownButton("Alte bookmark-uri", folderIcon) { Alignment = ToolStripItemAlignment.Right };
             FillMenu(other.DropDownItems, bookmarks.Other);
+            other.MouseMove += (_, e) => OnBarMouseMove(new Point(other.Bounds.Left + e.X, other.Bounds.Top + e.Y), e.Button);
+            other.MouseUp += (_, _) => FinishBarDrag();
             bar.Items.Add(other);
         }
         if (bookmarks.Bar.Count == 0)
@@ -910,7 +937,13 @@ public partial class MainForm : Form
         {
             var dd = new ToolStripDropDownButton(Trunc(b.DisplayName, 24), folderIcon) { Tag = b };
             FillMenu(dd.DropDownItems, b.Children ??= new());
-            dd.MouseUp += (_, e) => { if (e.Button == MouseButtons.Right) ShowBookmarkMenu(b); };
+            dd.MouseDown += (_, e) => OnBarItemMouseDown(dd, e);
+            dd.MouseMove += (_, e) => OnBarMouseMove(new Point(dd.Bounds.Left + e.X, dd.Bounds.Top + e.Y), e.Button);
+            dd.MouseUp += (_, e) =>
+            {
+                if (FinishBarDrag()) return;
+                if (e.Button == MouseButtons.Right) ShowBookmarkMenu(b);
+            };
             return dd;
         }
         // like Opera: bookmarks without a name show only their icon
@@ -923,9 +956,11 @@ public partial class MainForm : Form
             Padding = iconOnly ? new Padding(S(3), S(2), S(3), S(2)) : new Padding(S(2), S(2), S(3), S(2)),
             Margin = new Padding(0, 0, S(2), 0)
         };
+        btn.MouseDown += (_, e) => OnBarItemMouseDown(btn, e);
+        btn.MouseMove += (_, e) => OnBarMouseMove(new Point(btn.Bounds.Left + e.X, btn.Bounds.Top + e.Y), e.Button);
         btn.MouseUp += (_, e) =>
         {
-            if (dragActive || suppressBarClick) { suppressBarClick = false; return; }
+            if (FinishBarDrag() || suppressBarClick) { suppressBarClick = false; return; }
             if (e.Button == MouseButtons.Left)
             {
                 if (ModifierKeys.HasFlag(Keys.Control)) _ = CreateTab(b.Url, false);

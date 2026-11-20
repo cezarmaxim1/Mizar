@@ -427,6 +427,7 @@ public partial class MainForm
         {
             case "fixnet": await RepairConnection(); break;
             case "netdiag": await RunNetDiag(parts.Length > 1 && parts[1].Length > 0 ? parts[1] : Path.Combine(AppPaths.Root, "netdiag.txt")); break;
+            case "reopen-close": SaveReopenOnce(); Close(); break;
         }
     }
 

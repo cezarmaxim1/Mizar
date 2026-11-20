@@ -23,11 +23,11 @@ For modules, data flow and design decisions, read `ARCHITECTURE.md`. For what's 
 ## Commands
 
 - **Build:** `dotnet build -c Release` → `bin\Release\net10.0-windows\Mizar.exe`.
-- **Install for the owner.** Local source is the base: the owner's copy is installed from here, never through the self-updater. The owner allows closing their Mizar for this without asking.
-  1. Close it: post `WM_CLOSE` to its `WindowsForms10.Window*` top-level window. `Process.CloseMainWindow` does nothing; force-kill only if it doesn't exit.
+- **Install for the owner.** Local source is the base: the owner's copy is installed from here, never through the self-updater. The owner allows closing their Mizar for this without asking, **as long as open tabs are preserved and reopened identically**.
+  1. Close it preserving open tabs: run `"$LOCALAPPDATA\Programs\Mizar\Mizar.exe" --reopen-close` (saves all open tabs + active tab to one-shot `reopen-once.json` and closes cleanly, even with `RestoreSession` off). Wait for `Mizar` to exit; fall back to posting `WM_CLOSE` to its `WindowsForms10.Window*` top-level window (never `Process.CloseMainWindow`), and force-kill only if it still doesn't exit.
   2. `dotnet publish -c Release -r win-x64 --self-contained false -o "$LOCALAPPDATA/Programs/Mizar"`
   3. Delete `*.xml`, `*.pdb` and `Microsoft.Web.WebView2.Wpf.dll` from that folder.
-  4. Relaunch it, and tell the owner it was restarted: open tabs are lost.
+  4. Relaunch it (`Mizar.exe` automatically restores the exact tabs from `reopen-once.json` and deletes the file), and tell the owner it was restarted with their tabs reopened.
 - **Routine after a change:** test → install locally → `git push`.
 - **Release:** only when the owner asks. Commit first, then `powershell -ExecutionPolicy Bypass -File release.ps1 -Version X.Y.Z`. Needs `gh` logged in and the signing key. Release notes in Romanian.
 - **Self-test:** `Mizar.exe --selftest <url> <outfile> [flags]`. Loads the page, waits about 8 s, runs the check, writes `<outfile>` (counters, page text) plus `<outfile>.page.png`, then exits.

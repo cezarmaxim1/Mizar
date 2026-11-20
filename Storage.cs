@@ -18,6 +18,7 @@ public static class AppPaths
     public static string BookmarksBak => Path.Combine(Root, "bookmarks.bak");
     public static string Backups => Path.Combine(Root, "backups");
     public static string SessionFile => Path.Combine(Root, "session.json");
+    public static string ReopenOnceFile => Path.Combine(Root, "reopen-once.json");
     public static string ErrorLog => Path.Combine(Root, "errors.log");
     public static string DiagLog => Path.Combine(Root, "diag.log");
     public static string Favicons => Path.Combine(Root, "favicons");
@@ -94,24 +95,26 @@ public class SessionData
     public List<SessionTab> Tabs { get; set; } = new();
     public int Active { get; set; }
 
-    public static SessionData Load()
+    public static SessionData Load(string? path = null)
     {
+        var file = path ?? AppPaths.SessionFile;
         try
         {
-            if (File.Exists(AppPaths.SessionFile))
-                return JsonSerializer.Deserialize<SessionData>(File.ReadAllText(AppPaths.SessionFile)) ?? new();
+            if (File.Exists(file))
+                return JsonSerializer.Deserialize<SessionData>(File.ReadAllText(file)) ?? new();
         }
         catch { }
         return new();
     }
 
-    public void Save()
+    public void Save(string? path = null)
     {
+        var file = path ?? AppPaths.SessionFile;
         try
         {
-            var tmp = AppPaths.SessionFile + ".tmp";
+            var tmp = file + ".tmp";
             File.WriteAllText(tmp, JsonSerializer.Serialize(this));
-            File.Move(tmp, AppPaths.SessionFile, true);
+            File.Move(tmp, file, true);
         }
         catch { }
     }

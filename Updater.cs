@@ -233,10 +233,11 @@ public partial class MainForm
             }
             var answer = MessageBox.Show(this,
                 $"Versiunea {r.Version} a lui Mizar e descărcată (ai {Updater.CurrentText}).\n\n" +
-                "Repornesc acum? Tab-urile deschise se închid.\nDacă alegi Nu, se instalează data viitoare când închizi Mizar.",
+                "Repornesc acum? Tab-urile deschise se redeschid automat.\nDacă alegi Nu, se instalează data viitoare când închizi Mizar.",
                 "Actualizare Mizar", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
             if (answer == DialogResult.Yes)
             {
+                SaveReopenOnce();
                 RestartAfterUpdate = true;
                 Close();
             }

@@ -36,9 +36,10 @@ static class Program
         }
 
         using var guard = SingleInstance.TryAcquire();
-        // maintenance commands for the running window: "--fixnet", "--netdiag [report file]"
+        // maintenance commands for the running window: "--fixnet", "--netdiag [report file]", "--reopen-close"
         int nd = Array.IndexOf(args, "--netdiag");
         string? cmd = args.Contains("--fixnet") ? "mizar-cmd:fixnet"
+                    : args.Contains("--reopen-close") ? "mizar-cmd:reopen-close"
                     : nd >= 0 ? "mizar-cmd:netdiag|" + (nd + 1 < args.Length ? args[nd + 1] : "") : null;
         if (cmd != null)
         {
