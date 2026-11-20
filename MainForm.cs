@@ -745,6 +745,56 @@ public partial class MainForm : Form
         if (suggest.Visible) suggest.Visible = false;
     }
 
+    ToolStripItem? dragItem;
+    Point dragStart;
+    bool dragActive, suppressBarClick;
+    int dragDropIndex = -1, dragInsertX = -1;
+
+    void CancelBarDrag()
+    {
+        bool was = dragActive || dragInsertX >= 0;
+        dragItem = null;
+        dragActive = false;
+        dragDropIndex = -1;
+        dragInsertX = -1;
+        if (bar.Capture) bar.Capture = false;
+        if (bar.Cursor != Cursors.Default) bar.Cursor = Cursors.Default;
+        if (was) bar.Invalidate();
+    }
+
+    void UpdateBarDropTarget(int x)
+    {
+        if (dragItem?.Tag is not Bookmark dragged) return;
+        int fromIdx = bookmarks.Bar.IndexOf(dragged);
+        if (fromIdx < 0) return;
+
+        int idx = 0, dropIdx = -1, insertX = -1;
+        ToolStripItem? lastMain = null;
+        foreach (ToolStripItem it in bar.Items)
+        {
+            if (it.Tag is not Bookmark || it.Placement != ToolStripItemPlacement.Main) continue;
+            lastMain = it;
+            if (dropIdx < 0 && x < it.Bounds.Left + it.Bounds.Width / 2)
+            {
+                dropIdx = idx;
+                insertX = it.Bounds.Left - S(1);
+            }
+            idx++;
+        }
+        if (dropIdx < 0 && lastMain != null)
+        {
+            dropIdx = idx;
+            insertX = lastMain.Bounds.Right + S(1);
+        }
+        if (dropIdx == fromIdx || dropIdx == fromIdx + 1) insertX = -1;
+        if (dropIdx != dragDropIndex || insertX != dragInsertX)
+        {
+            dragDropIndex = dropIdx;
+            dragInsertX = insertX;
+            bar.Invalidate();
+        }
+    }
+
     void BuildBookmarkBar()
     {
         bar.Dock = DockStyle.Fill;
@@ -758,8 +808,66 @@ public partial class MainForm : Form
         bar.CanOverflow = true;
         bar.ShowItemToolTips = true;
         bar.Visible = settings.ShowBookmarksBar;
+        bar.MouseDown += (_, e) =>
+        {
+            suppressBarClick = false;
+            if (e.Button != MouseButtons.Left) return;
+            var it = bar.GetItemAt(e.Location);
+            if (it?.Tag is Bookmark && it.Placement == ToolStripItemPlacement.Main)
+            {
+                dragItem = it;
+                dragStart = e.Location;
+                dragActive = false;
+                dragDropIndex = -1;
+                dragInsertX = -1;
+            }
+        };
+        bar.MouseMove += (_, e) =>
+        {
+            if (dragItem == null) return;
+            if (e.Button != MouseButtons.Left) { CancelBarDrag(); return; }
+            if (!dragActive)
+            {
+                if (Math.Abs(e.X - dragStart.X) < S(6) && Math.Abs(e.Y - dragStart.Y) < S(6)) return;
+                dragActive = true;
+                if (dragItem is ToolStripDropDownButton dd) dd.HideDropDown();
+                bar.Capture = true;
+                bar.Cursor = Cursors.SizeWE;
+            }
+            UpdateBarDropTarget(e.X);
+        };
+        bar.MouseCaptureChanged += (_, _) => { if (dragActive) CancelBarDrag(); };
+        bar.Paint += (_, e) =>
+        {
+            if (!dragActive || dragInsertX < 0) return;
+            int w = Math.Max(2, S(2));
+            int padY = S(4);
+            using var b = new SolidBrush(Theme.Accent);
+            e.Graphics.FillRectangle(b, dragInsertX - w / 2, padY, w, Math.Max(4, bar.Height - padY * 2 - 1));
+        };
         bar.MouseUp += (_, e) =>
         {
+            if (dragActive)
+            {
+                var dragged = dragItem?.Tag as Bookmark;
+                int dropIdx = dragDropIndex;
+                suppressBarClick = true;
+                dragActive = false;
+                CancelBarDrag();
+                if (dragged != null && dropIdx >= 0)
+                {
+                    int fromIdx = bookmarks.Bar.IndexOf(dragged);
+                    if (fromIdx >= 0 && dropIdx != fromIdx && dropIdx != fromIdx + 1)
+                    {
+                        int toIdx = dropIdx > fromIdx ? dropIdx - 1 : dropIdx;
+                        bookmarks.Bar.RemoveAt(fromIdx);
+                        bookmarks.Bar.Insert(toIdx, dragged);
+                        bookmarks.NotifyChanged();
+                    }
+                }
+                return;
+            }
+            dragItem = null;
             if (e.Button != MouseButtons.Right || bar.GetItemAt(e.Location) != null) return;
             var cm = NewMenu();
             cm.Items.Add("Adaugă pagina curentă", null, (_, _) => ToggleBookmark());
@@ -775,6 +883,7 @@ public partial class MainForm : Form
 
     void RebuildBookmarkBar()
     {
+        CancelBarDrag();
         bar.SuspendLayout();
         var old = bar.Items.Cast<ToolStripItem>().ToList();
         bar.Items.Clear();
@@ -799,7 +908,7 @@ public partial class MainForm : Form
     {
         if (b.IsFolder)
         {
-            var dd = new ToolStripDropDownButton(Trunc(b.DisplayName, 24), folderIcon);
+            var dd = new ToolStripDropDownButton(Trunc(b.DisplayName, 24), folderIcon) { Tag = b };
             FillMenu(dd.DropDownItems, b.Children ??= new());
             dd.MouseUp += (_, e) => { if (e.Button == MouseButtons.Right) ShowBookmarkMenu(b); };
             return dd;
@@ -808,6 +917,7 @@ public partial class MainForm : Form
         bool iconOnly = string.IsNullOrWhiteSpace(b.Name);
         var btn = new ToolStripButton(iconOnly ? "" : Trunc(b.Name, 24), IconFor(b))
         {
+            Tag = b,
             ToolTipText = (iconOnly ? Bookmark.HostOf(b.Url) : b.Name) + "\n" + b.Url,
             DisplayStyle = iconOnly ? ToolStripItemDisplayStyle.Image : ToolStripItemDisplayStyle.ImageAndText,
             Padding = iconOnly ? new Padding(S(3), S(2), S(3), S(2)) : new Padding(S(2), S(2), S(3), S(2)),
@@ -815,6 +925,7 @@ public partial class MainForm : Form
         };
         btn.MouseUp += (_, e) =>
         {
+            if (dragActive || suppressBarClick) { suppressBarClick = false; return; }
             if (e.Button == MouseButtons.Left)
             {
                 if (ModifierKeys.HasFlag(Keys.Control)) _ = CreateTab(b.Url, false);
