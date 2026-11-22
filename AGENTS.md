@@ -17,7 +17,7 @@ For modules, data flow and design decisions, read `ARCHITECTURE.md`. For what's 
 - .NET 10 (`net10.0-windows`), WinForms, `ApplicationHighDpiMode=PerMonitorV2`. Moved from .NET 8 on 2026-11-14, when .NET 8 support ended.
 - `Microsoft.Web.WebView2` 1.0.2903.40; the runtime is the one shipped with Windows 11.
 - `Microsoft.Data.Sqlite` pinned to 10.0.15: 8.0.x pulled in a vulnerable `SQLitePCLRaw.lib.e_sqlite3`.
-- Version: `<Version>` in `Mizar.csproj`. Latest release: 1.0.3; `main` is ahead of it (see `STATUS.md`).
+- Version: `<Version>` in `Mizar.csproj`. Latest release: 1.0.4 (2026-11-22), published with the Gmail experiment switches as the owner runs them (`TabSleeping`/`AdFilter` off).
 - Repo: `github.com/cezarmaxim1/Mizar` (public), branch `main`.
 
 ## Commands
