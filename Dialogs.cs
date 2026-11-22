@@ -82,6 +82,9 @@ public class SettingsForm : Form
         ("auto", "Ca Windows (automat)"), ("light", "Mereu luminoasă"), ("dark", "Mereu întunecată")
     };
 
+    /// <summary>Self-test only (--settingstest): pretend the screen's work area is this tall.</summary>
+    public static int TestScreenHeight;
+
     public SettingsForm(Settings settings, Func<CoreWebView2BrowsingDataKinds, Task> clear, Action import,
         Action manage, Action makeDefault, Func<Task> connectDrive, Func<Task> syncDrive, Action disconnectDrive, Action<string> openUrl,
         Func<Task> checkUpdates)
@@ -90,11 +93,9 @@ public class SettingsForm : Form
         Text = "Setări";
         Font = Ui.Font;
         FormBorderStyle = FormBorderStyle.FixedDialog;
-        StartPosition = FormStartPosition.CenterParent;
+        StartPosition = FormStartPosition.Manual; // sized and placed in Load, to fit the screen
         MinimizeBox = MaximizeBox = false;
         ShowInTaskbar = false;
-        AutoSize = true;
-        AutoSizeMode = AutoSizeMode.GrowAndShrink;
 
         var col = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Padding = new Padding(18, 4, 18, 14) };
 
@@ -259,15 +260,38 @@ public class SettingsForm : Form
         ok.DialogResult = DialogResult.OK;
         var cancel = Ui.Btn("Anulează");
         cancel.DialogResult = DialogResult.Cancel;
-        var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Anchor = AnchorStyles.Right, Margin = new Padding(0, 18, 0, 0) };
+        // Save/Cancel stay pinned at the bottom; everything above scrolls when the screen is too short
+        // (owner's small laptop, 2026-11-22: the lower sections and the buttons were off-screen).
+        var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Dock = DockStyle.Bottom, Padding = new Padding(18, 10, 18, 14) };
         buttons.Controls.Add(cancel);
         buttons.Controls.Add(ok);
-        col.Controls.Add(buttons);
+        var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+        scroll.Controls.Add(col);
+        scroll.HandleCreated += (_, _) => Native.SetWindowTheme(scroll.Handle, Theme.Dark ? "DarkMode_Explorer" : "Explorer", null);
 
-        Controls.Add(col);
+        Controls.Add(scroll);
+        Controls.Add(buttons);
         AcceptButton = ok;
         CancelButton = cancel;
         Theme.ApplyToDialog(this);
+
+        Load += (_, _) =>
+        {
+            var content = col.GetPreferredSize(Size.Empty);
+            var wa = Screen.FromControl(Owner ?? (Control)this).WorkingArea;
+            if (TestScreenHeight > 0) wa = new Rectangle(wa.Left, wa.Top, wa.Width, TestScreenHeight);
+            int chromeW = Width - ClientSize.Width, chromeH = Height - ClientSize.Height;
+            int maxClientH = wa.Height - chromeH - 16;
+            int wantH = content.Height + buttons.GetPreferredSize(Size.Empty).Height;
+            bool fits = wantH <= maxClientH;
+            int w = content.Width + (fits ? 0 : SystemInformation.VerticalScrollBarWidth);
+            ClientSize = new Size(Math.Min(w, wa.Width - chromeW - 16), Math.Min(wantH, maxClientH));
+            var center = Owner != null ? new Point(Owner.Left + Owner.Width / 2, Owner.Top + Owner.Height / 2)
+                                       : new Point(wa.Left + wa.Width / 2, wa.Top + wa.Height / 2);
+            Location = new Point(
+                Math.Clamp(center.X - Width / 2, wa.Left, Math.Max(wa.Left, wa.Right - Width)),
+                Math.Clamp(center.Y - Height / 2, wa.Top, Math.Max(wa.Top, wa.Bottom - Height)));
+        };
     }
 
     void SaveFields()

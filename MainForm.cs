@@ -1580,6 +1580,30 @@ public partial class MainForm : Form
             await Task.Delay(40000); // slow-load check (6 s in this test) + black box + heal + reload
             keys += $"heal: after -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(img))}\n";
         }
+        if (startArgs.Contains("--settingstest"))
+        {
+            // opens Settings as if the screen were 700 px tall (a small laptop) and as tall as it is,
+            // and saves a picture of each: every section and the Save/Cancel buttons must be reachable
+            foreach (var h in new[] { 700, 0 })
+            {
+                SettingsForm.TestScreenHeight = h;
+                BeginInvoke(async () =>
+                {
+                    await Task.Delay(1500);
+                    var f = Application.OpenForms.OfType<SettingsForm>().FirstOrDefault();
+                    if (f == null) { keys += "settings: not open\n"; return; }
+                    var scroll = f.Controls.OfType<Panel>().First(p => p.AutoScroll);
+                    var save = f.Controls.OfType<FlowLayoutPanel>().First();
+                    keys += $"settings h={(h == 0 ? "real" : h.ToString())}: client={f.ClientSize} window={f.Bounds} scrollbar={scroll.VerticalScroll.Visible} content={scroll.DisplayRectangle.Height} buttonsVisible={f.ClientRectangle.Contains(save.Bounds)}\n";
+                    using var bmp = new Bitmap(f.Width, f.Height);
+                    f.DrawToBitmap(bmp, new Rectangle(Point.Empty, f.Size));
+                    bmp.Save($"{outFile}.settings-{(h == 0 ? "real" : h.ToString())}.png");
+                    f.Close();
+                });
+                OpenSettings();
+            }
+            SettingsForm.TestScreenHeight = 0;
+        }
         if (startArgs.Contains("--bardragtest"))
         {
             // needs enough bookmarks to overflow the bar: drag the last hidden one onto the bar's
