@@ -828,6 +828,13 @@ public partial class MainForm : Form
 
     ToolStripItem MakeBarItem(Bookmark b)
     {
+        var item = MakeBarItemCore(b);
+        bar.HookOverflowDrag(item);
+        return item;
+    }
+
+    ToolStripItem MakeBarItemCore(Bookmark b)
+    {
         if (b.IsFolder)
         {
             var dd = new ToolStripDropDownButton(Trunc(b.DisplayName, 24), folderIcon) { Tag = b };
@@ -847,6 +854,7 @@ public partial class MainForm : Form
         };
         btn.MouseUp += (_, e) =>
         {
+            if (bar.JustDragged || bar.OverflowDragging) return;
             if (e.Button == MouseButtons.Left)
             {
                 if (ModifierKeys.HasFlag(Keys.Control)) _ = CreateTab(b.Url, false);
@@ -886,11 +894,138 @@ public partial class MainForm : Form
             int idx = 0;
             foreach (ToolStripItem it in Items)
             {
-                if (it.Tag is not Bookmark b || it.Placement != ToolStripItemPlacement.Main) continue;
+                if (it.Tag is not Bookmark b) continue;
                 if (ReferenceEquals(b, target)) return idx;
                 idx++;
             }
             return -1;
+        }
+
+        /// <summary>True right after a drag ended, so the release doesn't also open the bookmark.</summary>
+        public bool JustDragged { get; private set; }
+
+        void EndDragSoon()
+        {
+            JustDragged = true;
+            BeginInvoke(() => JustDragged = false);
+        }
+
+        // ---- dragging from the overflow list (the » drop-down) ----
+        // The drop-down swallows MouseDown/MouseMove over its items, so the drag starts from the item's
+        // own MouseDown and then follows the mouse with a short timer until the button is released.
+        ToolStripItem? odItem;
+        Point odStart;
+        bool odActive;
+        int odInsertY = -1;
+        readonly System.Windows.Forms.Timer odTimer = new() { Interval = 15 };
+        /// <summary>Mouse position and left button; replaced by the self-test.</summary>
+        public Func<Point> MousePos = () => Control.MousePosition;
+        public Func<bool> LeftDown = () => (Control.MouseButtons & MouseButtons.Left) != 0;
+        /// <summary>A drag from the overflow list is under way: its items must not open on mouse-up.</summary>
+        public bool OverflowDragging => odActive;
+
+        public BookmarkBar()
+        {
+            odTimer.Tick += (_, _) => OverflowDragTick();
+            OverflowButton.DropDown.Paint += (_, e) =>
+            {
+                if (!odActive || odInsertY < 0) return;
+                int h = Math.Max(2, S(2));
+                using var b = new SolidBrush(Theme.Accent);
+                e.Graphics.FillRectangle(b, S(6), odInsertY - h / 2, OverflowButton.DropDown.Width - S(12), h);
+            };
+        }
+
+        /// <summary>Called for every bookmark item: a left press on it while it sits in the overflow list may start a drag.</summary>
+        public void HookOverflowDrag(ToolStripItem it)
+        {
+            it.MouseDown += (_, e) =>
+            {
+                if (e.Button != MouseButtons.Left || it.Placement != ToolStripItemPlacement.Overflow || it.Tag is not Bookmark) return;
+                odItem = it;
+                odStart = MousePos();
+                odActive = false;
+                odTimer.Start();
+            };
+        }
+
+        public void OverflowDragTick()
+        {
+            var dd = OverflowButton.DropDown;
+            if (odItem == null) { odTimer.Stop(); return; }
+            var screen = MousePos();
+            if (!LeftDown())
+            {
+                var dragged = odActive ? odItem.Tag as Bookmark : null;
+                int dropIdx = dragDropIndex;
+                EndOverflowDrag(dd);
+                if (dragged != null)
+                {
+                    EndDragSoon();
+                    dd.Close();
+                    if (dropIdx >= 0) Reordered?.Invoke(dragged, dropIdx);
+                }
+                return;
+            }
+            if (!odActive && (Math.Abs(screen.X - odStart.X) >= S(6) || Math.Abs(screen.Y - odStart.Y) >= S(6)))
+            {
+                odActive = true;
+                dragItem = odItem;
+                dragActive = true;
+                Cursor.Current = Cursors.SizeAll;
+            }
+            if (!odActive) return;
+            var onBar = PointToClient(screen);
+            if (ClientRectangle.Contains(onBar))
+            {
+                SetOverflowInsert(dd, -1);
+                UpdateDropTarget(onBar.X); // the bar's own insertion line
+            }
+            else
+            {
+                if (dragInsertX >= 0) { dragInsertX = -1; Invalidate(); }
+                UpdateOverflowTarget(dd, dd.PointToClient(screen).Y);
+            }
+        }
+
+        void EndOverflowDrag(ToolStripDropDown dd)
+        {
+            odTimer.Stop();
+            odItem = null;
+            odActive = false;
+            SetOverflowInsert(dd, -1);
+            Cursor.Current = Cursors.Default;
+            CancelDrag();
+        }
+
+        void SetOverflowInsert(ToolStripDropDown dd, int y)
+        {
+            if (odInsertY == y) return;
+            odInsertY = y;
+            dd.Invalidate();
+        }
+
+        /// <summary>Drop position inside the overflow list, as an index over all bookmark items.</summary>
+        void UpdateOverflowTarget(ToolStripDropDown dd, int y)
+        {
+            if (dragItem?.Tag is not Bookmark dragged) return;
+            int fromIdx = ItemIndexOf(dragged);
+            int idx = 0, dropIdx = -1, insertY = -1;
+            ToolStripItem? last = null;
+            foreach (ToolStripItem it in Items)
+            {
+                if (it.Tag is not Bookmark) continue;
+                if (it.Placement == ToolStripItemPlacement.Overflow)
+                {
+                    last = it;
+                    if (dropIdx < 0 && y < it.Bounds.Top + it.Bounds.Height / 2) { dropIdx = idx; insertY = it.Bounds.Top; }
+                }
+                idx++;
+            }
+            if (dropIdx < 0 && last != null) { dropIdx = ItemIndexOf((Bookmark)last.Tag!) + 1; insertY = last.Bounds.Bottom; }
+            if (dropIdx == fromIdx || dropIdx == fromIdx + 1) insertY = -1;
+            dragDropIndex = dropIdx;
+            SetOverflowInsert(dd, insertY);
         }
 
         void UpdateDropTarget(int x)
@@ -973,6 +1108,7 @@ public partial class MainForm : Form
                 int dropIdx = dragDropIndex;
                 dragActive = false;
                 CancelDrag();
+                EndDragSoon();
                 base.OnMouseLeave(EventArgs.Empty);
                 if (dragged != null && dropIdx >= 0) Reordered?.Invoke(dragged, dropIdx);
                 return;
@@ -1443,6 +1579,39 @@ public partial class MainForm : Form
             keys += $"heal: stuck -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(img))}\n";
             await Task.Delay(40000); // slow-load check (6 s in this test) + black box + heal + reload
             keys += $"heal: after -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(img))}\n";
+        }
+        if (startArgs.Contains("--bardragtest"))
+        {
+            // needs enough bookmarks to overflow the bar: drag the last hidden one onto the bar's
+            // first place, then the first hidden one to the end of the hidden list
+            // drives the overflow drag the way the timer sees the mouse: press on a hidden item,
+            // move, release over the target
+            string Order() => string.Join(",", bookmarks.Bar.Select(b => b.Name));
+            var dd = bar.OverflowButton.DropDown;
+            var mouse = Point.Empty; bool down = false;
+            bar.MousePos = () => mouse; bar.LeftDown = () => down;
+            List<ToolStripItem> Hidden() => bar.Items.Cast<ToolStripItem>().Where(i => i.Tag is Bookmark && i.Placement == ToolStripItemPlacement.Overflow).ToList();
+            async Task Drag(ToolStripItem src, Point to)
+            {
+                mouse = dd.PointToScreen(new Point(src.Bounds.X + 10, src.Bounds.Y + src.Bounds.Height / 2));
+                down = true;
+                typeof(ToolStripItem).GetMethod("HandleMouseDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .Invoke(src, new object[] { new MouseEventArgs(MouseButtons.Left, 1, 10, 5, 0) });
+                bar.OverflowDragTick();
+                mouse = new Point(mouse.X, mouse.Y + 20); bar.OverflowDragTick();                mouse = to; bar.OverflowDragTick();
+                down = false; bar.OverflowDragTick();
+                await Task.Delay(800);
+            }
+            keys += $"bardrag: before -> {Order()} | hidden={Hidden().Count}\n";
+            bar.OverflowButton.ShowDropDown(); await Task.Delay(800);
+            var firstOnBar = bar.Items.Cast<ToolStripItem>().First(i => i.Tag is Bookmark && i.Placement == ToolStripItemPlacement.Main);
+            await Drag(Hidden()[^1], bar.PointToScreen(new Point(firstOnBar.Bounds.Left + 2, firstOnBar.Bounds.Top + 4)));
+            keys += $"bardrag: hidden last -> bar first -> {Order()} | tab url={Bookmark.HostOf(cw.Source)}\n";
+            bar.OverflowButton.ShowDropDown(); await Task.Delay(800);
+            var h = Hidden();
+            await Drag(h[0], dd.PointToScreen(new Point(h[^1].Bounds.X + 10, h[^1].Bounds.Bottom - 2)));
+            keys += $"bardrag: hidden first -> hidden end -> {Order()}\n";
+            bar.MousePos = () => Control.MousePosition; bar.LeftDown = () => (Control.MouseButtons & MouseButtons.Left) != 0;
         }
         if (startArgs.Contains("--focustest"))
         {

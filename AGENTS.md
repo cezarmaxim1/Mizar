@@ -52,6 +52,7 @@ For modules, data flow and design decisions, read `ARCHITECTURE.md`. For what's 
     | `--scheme light\|dark\|auto` | page colour scheme |
     | `--cookietest` | writes a `cookies test google:` line to `diag.log` |
     | `--downloadtest` | clicks `#l` (a link with `download`); the file must land in `DownloadFolder` |
+    | `--bardragtest` | needs 20+ bookmarks so the bar overflows; drags hidden bookmarks onto the bar and within the » list, through `BookmarkBar.MousePos`/`LeftDown` |
     | `--focustest` | switch tabs and back; reports the page's focused element. Can't reproduce the focus-ring bug: the test window never becomes the foreground window |
 
   - These need a local page served with `python -m http.server`:
