@@ -77,6 +77,7 @@ public class TabStrip : Control
 
     public event Action<int>? TabClicked;
     public event Action<int>? TabCloseClicked;
+    public event Action? TabMoved;
     public event Action? NewTabClicked;
     public event Action<int, Point>? TabRightClicked;
     public event Action? MinimizeClicked, MaximizeClicked, CloseClicked;
@@ -90,6 +91,13 @@ public class TabStrip : Control
     float spin;
     readonly System.Windows.Forms.Timer timer = new() { Interval = 50 };
 
+    // tab drag-to-reorder + smooth slide animation (animTimer stops as soon as all tabs settle)
+    BrowserTab? dragTab;
+    bool dragActive;
+    int dragStartX, dragOffsetX, dragX;
+    readonly Dictionary<BrowserTab, float> slideOffset = new();
+    readonly System.Windows.Forms.Timer animTimer = new() { Interval = 16 };
+
     const string GClose = "\uE8BB";
 
     public TabStrip()
@@ -102,6 +110,20 @@ public class TabStrip : Control
         {
             if (Tabs.Any(t => t.IsLoading)) { spin = (spin + 30) % 360; Invalidate(); }
             else timer.Stop();
+        };
+        animTimer.Tick += (_, _) =>
+        {
+            if (slideOffset.Count == 0) { animTimer.Stop(); return; }
+            List<BrowserTab>? done = null;
+            foreach (var key in slideOffset.Keys.ToList())
+            {
+                float next = slideOffset[key] * 0.68f;
+                if (Math.Abs(next) < 0.5f || !Tabs.Contains(key)) (done ??= new()).Add(key);
+                else slideOffset[key] = next;
+            }
+            if (done != null) foreach (var k in done) slideOffset.Remove(k);
+            if (slideOffset.Count == 0) animTimer.Stop();
+            Invalidate();
         };
     }
 
@@ -147,12 +169,13 @@ public class TabStrip : Control
         return new Rectangle(P(6) + i * (w + TabGap), TabTop, w, TabH);
     }
 
-    Rectangle TabCloseRect(int i)
+    Rectangle TabCloseRectFor(Rectangle r)
     {
-        var r = TabRect(i);
         int s = P(18);
         return new Rectangle(r.Right - s - P(6), r.Top + (r.Height - s) / 2, s, s);
     }
+
+    Rectangle TabCloseRect(int i) => TabCloseRectFor(TabRect(i));
 
     Rectangle PlusRect()
     {
@@ -194,89 +217,24 @@ public class TabStrip : Control
         g.Clear(Theme.Strip);
 
         int rad = P(7);
+        int dragIdx = dragActive && dragTab != null ? Tabs.IndexOf(dragTab) : -1;
         for (int i = 0; i < Tabs.Count; i++)
         {
-            var tab = Tabs[i];
+            if (i == dragIdx) continue;
             var r = TabRect(i);
-            bool sel = i == SelectedIndex;
-            bool hov = !sel && i == hover;
-            Color tabBg = sel ? Theme.TabActive : hov ? Theme.TabHover : Theme.Strip;
-
-            if (sel)
-            {
-                // fill only, no outline or shadow (owner's choice, 2026-11-17)
-                using var path = Theme.Round(r, rad);
-                using var b = new SolidBrush(Theme.TabActive);
-                g.FillPath(b, path);
-            }
-            else if (hov)
-            {
-                using var path = Theme.Round(r, rad);
-                using var b = new SolidBrush(Theme.TabHover);
-                g.FillPath(b, path);
-            }
-
-            int ic = P(15);
-            int x = r.Left + P(10);
-            int midY = r.Top + r.Height / 2;
-
-            if (tab.IsLoading)
-            {
-                using var pen = new Pen(Theme.Accent, P(2)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-                g.DrawArc(pen, x + 1, midY - ic / 2 + 1, ic - 2, ic - 2, spin, 270);
-            }
-            else if (tab.Favicon != null)
-            {
-                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                g.DrawImage(tab.Favicon, x, midY - ic / 2, ic, ic);
-            }
-            else
-            {
-                using var pen = new Pen(Theme.Muted, Math.Max(1, P(1.3f)));
-                g.DrawEllipse(pen, x + 1, midY - ic / 2 + 1, ic - 2, ic - 2);
-            }
-
-            int textLeft = x + ic + P(7);
-            int textRight = ShowClose(i) ? TabCloseRect(i).Left - P(4) : r.Right - P(8);
-            int availW = textRight - textLeft;
-            if (availW > P(6))
-            {
-                var textRect = new Rectangle(textLeft, midY - P(10), availW, P(20));
-                TextRenderer.DrawText(g, tab.Title, Font, textRect, sel ? Theme.Text : Theme.Muted,
-                    TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
-
-                int fullW = TextRenderer.MeasureText(g, tab.Title, Font, new Size(int.MaxValue, P(20)),
-                    TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine).Width;
-                if (fullW > availW)
-                {
-                    int fadeW = Math.Min(P(24), availW / 2);
-                    if (fadeW > 2)
-                    {
-                        var fadeRect = new Rectangle(textRight - fadeW, textRect.Top, fadeW, textRect.Height);
-                        using var lgb = new LinearGradientBrush(
-                            new Rectangle(fadeRect.X - 1, fadeRect.Y, fadeRect.Width + 2, fadeRect.Height),
-                            Color.FromArgb(0, tabBg), tabBg, LinearGradientMode.Horizontal);
-                        g.FillRectangle(lgb, fadeRect);
-                    }
-                }
-            }
-
-            if (ShowClose(i))
-            {
-                var cr = TabCloseRect(i);
-                if (hover == i && hoverTabClose)
-                {
-                    using var hb = new SolidBrush(Theme.PressFill);
-                    using var cp = Theme.Round(cr, P(5));
-                    g.FillPath(hb, cp);
-                }
-                Theme.DrawGlyph(g, GClose, cr, Theme.Muted, 7f);
-            }
+            if (slideOffset.TryGetValue(Tabs[i], out float dx)) r.X += (int)Math.Round(dx);
+            DrawTab(g, i, r, rad);
+        }
+        if (dragIdx >= 0)
+        {
+            var r = TabRect(dragIdx);
+            r.X = dragX;
+            DrawTab(g, dragIdx, r, rad);
         }
 
         // "+" new tab
         var pr = PlusRect();
-        if (hover == HPlus)
+        if (!dragActive && hover == HPlus)
         {
             using var hb = new SolidBrush(Theme.HoverFill);
             using var pp = Theme.Round(pr, P(7));
@@ -288,6 +246,85 @@ public class TabStrip : Control
         DrawCaption(g, 0, HMin);
         DrawCaption(g, 1, HMax);
         DrawCaption(g, 2, HClose);
+    }
+
+    void DrawTab(Graphics g, int i, Rectangle r, int rad)
+    {
+        var tab = Tabs[i];
+        bool sel = i == SelectedIndex;
+        bool hov = !dragActive && !sel && i == hover;
+        Color tabBg = sel ? Theme.TabActive : hov ? Theme.TabHover : Theme.Strip;
+
+        if (sel)
+        {
+            // fill only, no outline or shadow (owner's choice, 2026-11-17)
+            using var path = Theme.Round(r, rad);
+            using var b = new SolidBrush(Theme.TabActive);
+            g.FillPath(b, path);
+        }
+        else if (hov)
+        {
+            using var path = Theme.Round(r, rad);
+            using var b = new SolidBrush(Theme.TabHover);
+            g.FillPath(b, path);
+        }
+
+        int ic = P(15);
+        int x = r.Left + P(10);
+        int midY = r.Top + r.Height / 2;
+
+        if (tab.IsLoading)
+        {
+            using var pen = new Pen(Theme.Accent, P(2)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawArc(pen, x + 1, midY - ic / 2 + 1, ic - 2, ic - 2, spin, 270);
+        }
+        else if (tab.Favicon != null)
+        {
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.DrawImage(tab.Favicon, x, midY - ic / 2, ic, ic);
+        }
+        else
+        {
+            using var pen = new Pen(Theme.Muted, Math.Max(1, P(1.3f)));
+            g.DrawEllipse(pen, x + 1, midY - ic / 2 + 1, ic - 2, ic - 2);
+        }
+
+        var cr = TabCloseRectFor(r);
+        int textLeft = x + ic + P(7);
+        int textRight = ShowClose(i) ? cr.Left - P(4) : r.Right - P(8);
+        int availW = textRight - textLeft;
+        if (availW > P(6))
+        {
+            var textRect = new Rectangle(textLeft, midY - P(10), availW, P(20));
+            TextRenderer.DrawText(g, tab.Title, Font, textRect, sel ? Theme.Text : Theme.Muted,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+
+            int fullW = TextRenderer.MeasureText(g, tab.Title, Font, new Size(int.MaxValue, P(20)),
+                TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine).Width;
+            if (fullW > availW)
+            {
+                int fadeW = Math.Min(P(24), availW / 2);
+                if (fadeW > 2)
+                {
+                    var fadeRect = new Rectangle(textRight - fadeW, textRect.Top, fadeW, textRect.Height);
+                    using var lgb = new LinearGradientBrush(
+                        new Rectangle(fadeRect.X - 1, fadeRect.Y, fadeRect.Width + 2, fadeRect.Height),
+                        Color.FromArgb(0, tabBg), tabBg, LinearGradientMode.Horizontal);
+                    g.FillRectangle(lgb, fadeRect);
+                }
+            }
+        }
+
+        if (ShowClose(i))
+        {
+            if (!dragActive && hover == i && hoverTabClose)
+            {
+                using var hb = new SolidBrush(Theme.PressFill);
+                using var cp = Theme.Round(cr, P(5));
+                g.FillPath(hb, cp);
+            }
+            Theme.DrawGlyph(g, GClose, cr, Theme.Muted, 7f);
+        }
     }
 
     void DrawCaption(Graphics g, int which, int code)
@@ -373,9 +410,72 @@ public class TabStrip : Control
         return i;
     }
 
+    void FinishDrag()
+    {
+        if (dragActive && dragTab != null)
+        {
+            int idx = Tabs.IndexOf(dragTab);
+            if (idx >= 0)
+            {
+                float dx = dragX - TabRect(idx).Left;
+                if (Math.Abs(dx) >= 0.5f)
+                {
+                    slideOffset[dragTab] = dx;
+                    if (!animTimer.Enabled) animTimer.Start();
+                }
+            }
+        }
+        dragActive = false;
+        dragTab = null;
+        if (Capture) Capture = false;
+        Invalidate();
+    }
+
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (dragTab != null)
+        {
+            if ((e.Button & MouseButtons.Left) == 0 || Tabs.Count <= 1 || !Tabs.Contains(dragTab))
+            {
+                FinishDrag();
+                return;
+            }
+            if (!dragActive && Math.Abs(e.X - dragStartX) >= P(5))
+            {
+                dragActive = true;
+                Capture = true;
+            }
+            if (dragActive)
+            {
+                int w = TabWidth();
+                int step = w + TabGap;
+                int maxLeft = TabRect(Tabs.Count - 1).Left;
+                dragX = Math.Clamp(e.X - dragOffsetX, P(6), maxLeft);
+                int curIdx = Tabs.IndexOf(dragTab);
+                int targetIdx = Math.Clamp((dragX + w / 2 - P(6)) / Math.Max(1, step), 0, Tabs.Count - 1);
+                if (curIdx >= 0 && targetIdx != curIdx)
+                {
+                    if (targetIdx > curIdx)
+                    {
+                        for (int i = curIdx + 1; i <= targetIdx; i++)
+                            slideOffset[Tabs[i]] = slideOffset.GetValueOrDefault(Tabs[i]) + step;
+                    }
+                    else
+                    {
+                        for (int i = targetIdx; i < curIdx; i++)
+                            slideOffset[Tabs[i]] = slideOffset.GetValueOrDefault(Tabs[i]) - step;
+                    }
+                    Tabs.RemoveAt(curIdx);
+                    Tabs.Insert(targetIdx, dragTab);
+                    SelectedIndex = targetIdx;
+                    if (!animTimer.Enabled) animTimer.Start();
+                    TabMoved?.Invoke();
+                }
+                Invalidate();
+                return;
+            }
+        }
         int h = HitAny(e.Location, out bool hc);
         if (h != hover || hc != hoverTabClose) { hover = h; hoverTabClose = hc; Invalidate(); }
     }
@@ -383,6 +483,7 @@ public class TabStrip : Control
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
+        if (dragActive) return;
         hover = -1; hoverTabClose = false; pressed = int.MinValue;
         Invalidate();
     }
@@ -398,7 +499,15 @@ public class TabStrip : Control
             if (h >= 0)
             {
                 if (onClose) TabCloseClicked?.Invoke(h);
-                else TabClicked?.Invoke(h);
+                else
+                {
+                    dragTab = Tabs[h];
+                    dragStartX = e.X;
+                    dragOffsetX = e.X - TabRect(h).Left;
+                    dragX = TabRect(h).Left;
+                    dragActive = false;
+                    TabClicked?.Invoke(h);
+                }
             }
             else if (e.Clicks == 2) MaximizeClicked?.Invoke();
             else EmptyAreaPressed?.Invoke(e.Location); // fallback: let the form move / resize itself
@@ -410,6 +519,12 @@ public class TabStrip : Control
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        if (dragTab != null)
+        {
+            bool wasDrag = dragActive;
+            FinishDrag();
+            if (wasDrag) return;
+        }
         int h = HitAny(e.Location, out _);
         int was = pressed;
         pressed = int.MinValue;
@@ -420,9 +535,15 @@ public class TabStrip : Control
         else if (h == HClose) CloseClicked?.Invoke();
     }
 
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        base.OnMouseCaptureChanged(e);
+        if (dragActive) FinishDrag();
+    }
+
     protected override void Dispose(bool disposing)
     {
-        if (disposing) timer.Dispose();
+        if (disposing) { timer.Dispose(); animTimer.Dispose(); }
         base.Dispose(disposing);
     }
 }

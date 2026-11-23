@@ -91,6 +91,7 @@ public partial class MainForm : Form
         tabStrip.Margin = Padding.Empty;
         tabStrip.TabClicked += i => Activate(tabs[i]);
         tabStrip.TabCloseClicked += i => CloseTab(tabs[i]);
+        tabStrip.TabMoved += () => sessionDirty = true;
         tabStrip.NewTabClicked += () => _ = NewTabFocused();
         tabStrip.TabRightClicked += ShowTabMenu;
         tabStrip.MinimizeClicked += () => WindowState = FormWindowState.Minimized;
