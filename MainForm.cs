@@ -1950,7 +1950,10 @@ public partial class MainForm : Form
             TabChanged(tab);
 
             var host = Bookmark.HostOf(cw.Source);
-            if (host.Length > 0 && FaviconCache.Save(host, img) && bookmarks.HasHost(host))
+            bool updated = host.Length > 0 && FaviconCache.Save(host, img, overwrite: true);
+            var urlKey = OperaFavicons.UrlKey(cw.Source);
+            if (FaviconCache.Has(urlKey) && FaviconCache.Save(urlKey, img, overwrite: true)) updated = true;
+            if (updated && bookmarks.HasHost(host))
                 RebuildBookmarkBar();
         }
         catch { }
@@ -2273,7 +2276,11 @@ public partial class MainForm : Form
             var name = active.Title;
             if (name.Length > 60) name = name[..60];
             bookmarks.Bar.Add(new Bookmark { Name = name, Url = active.Url });
-            if (active.Favicon != null) FaviconCache.Save(Bookmark.HostOf(active.Url), active.Favicon);
+            if (active.Favicon != null)
+            {
+                FaviconCache.Save(Bookmark.HostOf(active.Url), active.Favicon, overwrite: true);
+                FaviconCache.Save(OperaFavicons.UrlKey(active.Url), active.Favicon, overwrite: true);
+            }
         }
         bookmarks.NotifyChanged();
     }

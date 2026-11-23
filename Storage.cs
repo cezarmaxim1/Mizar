@@ -467,12 +467,12 @@ static class FaviconCache
         }
     }
 
-    /// <summary>Saves the icon if none is stored yet. Returns true when a new icon was written.</summary>
-    public static bool Save(string host, Image img)
+    /// <summary>Saves the icon (overwriting if <paramref name="overwrite"/> is true and the pixels changed). Returns true when a new or updated icon was written.</summary>
+    public static bool Save(string host, Image img, bool overwrite = false)
     {
         if (string.IsNullOrEmpty(host)) return false;
         var f = FileFor(host);
-        if (File.Exists(f)) return false;
+        if (!overwrite && File.Exists(f)) return false;
         try
         {
             using var bmp = new Bitmap(32, 32);
@@ -481,7 +481,15 @@ static class FaviconCache
                 g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                 g.DrawImage(img, 0, 0, 32, 32);
             }
-            bmp.Save(f, ImageFormat.Png);
+            using var ms = new MemoryStream();
+            bmp.Save(ms, ImageFormat.Png);
+            var bytes = ms.ToArray();
+            if (overwrite && File.Exists(f))
+            {
+                try { if (File.ReadAllBytes(f).AsSpan().SequenceEqual(bytes)) return false; }
+                catch { }
+            }
+            File.WriteAllBytes(f, bytes);
             lock (Cache) Cache.Remove(host);
             return true;
         }
