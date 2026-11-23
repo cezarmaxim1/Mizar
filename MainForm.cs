@@ -19,11 +19,10 @@ public partial class MainForm : Form
     /// <summary>Engine flag --enable-features=HttpsUpgrades (HTTPS-First).</summary>
     const bool HttpsUpgrades = true;
 
-    // Gmail experiment from 2026-11-20 (STATUS.md): tab sleeping and the ad/tracker filter off at
-    // once (owner's choice). Stall again -> both ruled out, set back to true. No stall for 4-5 days ->
-    // turn them back on one at a time.
+    // Gmail experiment (STATUS.md): after ~84 h clean with both off (2026-11-20 08:17 -> 2026-11-23 20:48),
+    // turned TabSleeping back on first; AdFilter stays off for the next 3-4 days to isolate them.
     /// <summary>Background tabs are suspended (TrySuspendAsync) after SleepAfter.</summary>
-    const bool TabSleeping = false;
+    const bool TabSleeping = true;
     /// <summary>Ad and tracker requests are filtered (AddWebResourceRequestedFilter per AdBlocker domain).</summary>
     const bool AdFilter = false;
 

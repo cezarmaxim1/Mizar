@@ -83,10 +83,10 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
    - **(a) ruled out:** with it off, Gmail stalled again on 2026-11-19 18:07, 2.5 min after start (same black box: `running=starting`). It is back on. Two stalls 8 min apart, the second right after a restart that followed a heal (fresh worker registration), so stalls can come within minutes.
    - **(b), (c), (d) ruled out:** all three off from 2026-11-19 18:10; Gmail stalled on 2026-11-20 08:12 (same black box, heal clean; Mizar had been open overnight). All three are back on.
    - **Engine versions match:** WebView2 Runtime and Edge are both 157.0.4341.60, so Edge is a fair control. **The owner keeps Gmail open in Edge from 2026-11-20.** If Edge stalls too, the cause is the engine or the account, not Mizar.
-   - **Running now: tab sleeping and the ad/tracker filter both off since 2026-11-20 08:17** (owner's choice). Switches `TabSleeping`, `AdFilter` in `MainForm.cs`; `diag.log` start line shows `tabSleeping=off adFilter=off`. Meanwhile ads aren't blocked and background tabs use more RAM.
-     - As of 2026-11-22 15:10: no Gmail stall since the test began (about 55 h). Release 1.0.4 ships with both off, by the owner's choice; release notes say so.
-     - Stall again → both ruled out. Remaining Mizar-only things: the injected `ShortcutScript`, CDP calls on pages (`zoomPoll`, probes), `PerMonitorV2`/hosting, the user agent; compare with the Edge result.
-     - No stall for 4–5 days → turn them back on one at a time.
+   - **Running now: `TabSleeping` back on (`2026-11-23 20:48`), `AdFilter` still off.**
+     - Both were off from `2026-11-20 08:17` to `2026-11-23 20:48` (**~84 h / 3.5 days, zero Gmail stalls**). Release 1.0.4 shipped with both off.
+     - Turning them back on one at a time: `TabSleeping = true` first (`diag.log` shows `tabSleeping=on adFilter=off`).
+     - Stall now → `TabSleeping` is the trigger. No stall for 3–4 days → turn `AdFilter = true` next to test the `WebResourceRequested` filter.
    - (a) `MemoryUsageTargetLevel.Low` for hidden tabs;
    - (b) the startup `ClearData(BrowsingHistory | DownloadHistory)`;
    - (c) the background CDP `Network.enable` watch;
