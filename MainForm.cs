@@ -1948,6 +1948,9 @@ public partial class MainForm : Form
             tab.SetFavicon(img, owned: true); // the previous icon is released here
             TabChanged(tab);
 
+            // Only overwrite cached bookmark icons when the page actually has a real favicon URI
+            // (during initial load WebView2 fires FaviconChanged with an empty URI / generic globe).
+            if (string.IsNullOrEmpty(cw.FaviconUri)) return;
             var host = Bookmark.HostOf(cw.Source);
             bool updated = host.Length > 0 && FaviconCache.Save(host, img, overwrite: true);
             var urlKey = OperaFavicons.UrlKey(cw.Source);
