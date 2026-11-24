@@ -1385,6 +1385,26 @@ public partial class MainForm : Form
             var d = e.GetDeferral();
             _ = CreateTab(null, true, e, d, tabs.IndexOf(tab) + 1);
         };
+        cw.ContextMenuRequested += (_, e) =>
+        {
+            if (!e.ContextMenuTarget.HasSelection) return;
+            var raw = e.ContextMenuTarget.SelectionText;
+            if (string.IsNullOrWhiteSpace(raw)) return;
+            var query = string.Join(" ", raw.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+            if (query.Length == 0) return;
+            var item = cw.Environment.CreateContextMenuItem(
+                $"Caută pe Google „{Trunc(query, 32)}”", null, CoreWebView2ContextMenuItemKind.Command);
+            item.CustomItemSelected += (_, _) =>
+            {
+                int at = tabs.IndexOf(tab);
+                _ = CreateTab("https://www.google.com/search?q=" + Uri.EscapeDataString(query),
+                    activate: true, insertAt: at >= 0 ? at + 1 : -1);
+            };
+            int pos = 0;
+            for (int i = 0; i < e.MenuItems.Count; i++)
+                if (e.MenuItems[i].Name == "copy") { pos = i + 1; break; }
+            e.MenuItems.Insert(pos, item);
+        };
         // A new tab starts with the theme colour (no white flash in dark mode), but once a page
         // loads the canvas must be white like in every browser: many sites (e.g. altex.ro) never set
         // a background and rely on the default white, and look broken on a dark canvas.
