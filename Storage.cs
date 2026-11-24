@@ -359,10 +359,34 @@ public class BookmarkStore
         }
     }
 
-    /// <summary>Imports Opera bookmarks, skipping ones already present. Returns how many were added, or -1 if Opera has none.</summary>
-    public int ImportFromOpera()
+    public static string? ChromeBookmarksPath
     {
-        var path = OperaBookmarksPath;
+        get
+        {
+            var baseDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Google", "Chrome", "User Data");
+            var def = Path.Combine(baseDir, "Default", "Bookmarks");
+            if (File.Exists(def)) return def;
+            if (Directory.Exists(baseDir))
+            {
+                foreach (var d in Directory.GetDirectories(baseDir, "Profile *").OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+                {
+                    var p = Path.Combine(d, "Bookmarks");
+                    if (File.Exists(p)) return p;
+                }
+            }
+            return null;
+        }
+    }
+
+    /// <summary>Imports Opera bookmarks, skipping ones already present. Returns how many were added, or -1 if Opera has none.</summary>
+    public int ImportFromOpera() => ImportFromChromium(OperaBookmarksPath);
+
+    /// <summary>Imports Google Chrome bookmarks, skipping ones already present. Returns how many were added, or -1 if Chrome has none.</summary>
+    public int ImportFromChrome() => ImportFromChromium(ChromeBookmarksPath);
+
+    int ImportFromChromium(string? path)
+    {
         if (path == null) return -1;
 
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);

@@ -659,6 +659,7 @@ public partial class MainForm : Form
         bm.DropDownItems.Add(Item("Gestionează bookmark-urile", "Ctrl+Shift+O", OpenBookmarkManager));
         bm.DropDownItems.Add(miShowBar);
         bm.DropDownItems.Add(new ToolStripSeparator());
+        bm.DropDownItems.Add(Item("Importă din Chrome", "", ImportChrome));
         bm.DropDownItems.Add(Item("Importă din Opera", "", ImportOpera));
 
         var zoom = new ToolStripMenuItem("Zoom");
@@ -794,6 +795,7 @@ public partial class MainForm : Form
             var cm = NewMenu();
             cm.Items.Add("Adaugă pagina curentă", null, (_, _) => ToggleBookmark());
             cm.Items.Add("Gestionează bookmark-urile", null, (_, _) => OpenBookmarkManager());
+            cm.Items.Add("Importă din Chrome", null, (_, _) => ImportChrome());
             cm.Items.Add("Importă din Opera", null, (_, _) => ImportOpera());
             cm.Show(bar, e.Location);
         };
@@ -2320,19 +2322,39 @@ public partial class MainForm : Form
         f.ShowDialog(this);
     }
 
-    void ImportOpera()
+    void ImportOpera() => ImportFromBrowser("Opera", bookmarks.ImportFromOpera, OperaFavicons.Load);
+
+    void ImportChrome() => ImportFromBrowser("Chrome", bookmarks.ImportFromChrome, OperaFavicons.LoadChrome);
+
+    void ImportFromBrowser(string browserName, Func<int> importFn, Func<IEnumerable<string>, List<(string key, byte[] png)>> loadFavicons)
     {
         int n;
-        try { n = bookmarks.ImportFromOpera(); }
+        try { n = importFn(); }
         catch (Exception ex)
         {
-            MessageBox.Show(this, "Nu am putut citi bookmark-urile din Opera:\n" + ex.Message, "Mizar", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"Nu am putut citi bookmark-urile din {browserName}:\n" + ex.Message, "Mizar", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
-        if (n < 0) { MessageBox.Show(this, "Nu am găsit Opera pe acest calculator.", "Mizar"); return; }
+        if (n < 0) { MessageBox.Show(this, $"Nu am găsit {browserName} pe acest calculator.", "Mizar"); return; }
         bookmarks.NotifyChanged();
-        MessageBox.Show(this, n == 0 ? "Toate bookmark-urile din Opera sunt deja aici." : $"Am importat {n} bookmark-uri din Opera.", "Mizar");
-        if (n > 0) _ = ImportOperaFavicons().ContinueWith(_ => BeginInvoke(() => _ = PrefetchFavicons()));
+        MessageBox.Show(this, n == 0 ? $"Toate bookmark-urile din {browserName} sunt deja aici." : $"Am importat {n} bookmark-uri din {browserName}.", "Mizar");
+        if (n > 0)
+            _ = ImportBrowserFavicons(loadFavicons).ContinueWith(_ => BeginInvoke(() => _ = PrefetchFavicons()));
+    }
+
+    async Task ImportBrowserFavicons(Func<IEnumerable<string>, List<(string key, byte[] png)>> loader)
+    {
+        var urls = bookmarks.AllUrls().Select(b => b.Url!).ToList();
+        List<(string key, byte[] png)> found;
+        try { found = await Task.Run(() => loader(urls)); }
+        catch { return; }
+        int saved = 0;
+        foreach (var (key, png) in found)
+        {
+            using var img = FaviconCache.Decode(png);
+            if (img != null && FaviconCache.Save(key, img)) saved++;
+        }
+        if (saved > 0) RebuildBookmarkBar();
     }
 
     // ---------- Downloads ----------
@@ -2473,7 +2495,7 @@ public partial class MainForm : Form
 
     void OpenSettings()
     {
-        using var f = new SettingsForm(settings, ClearData, ImportOpera, OpenBookmarkManager, MakeDefaultBrowser,
+        using var f = new SettingsForm(settings, ClearData, ImportOpera, ImportChrome, OpenBookmarkManager, MakeDefaultBrowser,
             ConnectDriveAsync, () => SyncBookmarksAsync(silent: false), () => DriveSync.Disconnect(settings), url => _ = CreateTab(url),
             () => CheckForUpdates(manual: true));
         if (f.ShowDialog(this) != DialogResult.OK) return;

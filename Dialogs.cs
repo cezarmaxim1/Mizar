@@ -85,7 +85,7 @@ public class SettingsForm : Form
     /// <summary>Self-test only (--settingstest): pretend the screen's work area is this tall.</summary>
     public static int TestScreenHeight;
 
-    public SettingsForm(Settings settings, Func<CoreWebView2BrowsingDataKinds, Task> clear, Action import,
+    public SettingsForm(Settings settings, Func<CoreWebView2BrowsingDataKinds, Task> clear, Action importOpera, Action importChrome,
         Action manage, Action makeDefault, Func<Task> connectDrive, Func<Task> syncDrive, Action disconnectDrive, Action<string> openUrl,
         Func<Task> checkUpdates)
     {
@@ -173,7 +173,9 @@ public class SettingsForm : Form
 
         col.Controls.Add(Ui.Header("Bookmark-uri"));
         col.Controls.Add(bar);
-        col.Controls.Add(Row(Ui.Btn("Gestionează...", (_, _) => manage()), Ui.Btn("Importă din Opera", (_, _) => import())));
+        col.Controls.Add(Row(Ui.Btn("Gestionează...", (_, _) => manage()),
+            Ui.Btn("Importă din Chrome", (_, _) => importChrome()),
+            Ui.Btn("Importă din Opera", (_, _) => importOpera())));
 
         var driveStatus = new Label { AutoSize = true, Tag = "muted", Margin = new Padding(0, 8, 0, 2) };
         var btnDriveConn = Ui.Btn("");

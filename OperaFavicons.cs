@@ -39,11 +39,35 @@ static class OperaFavicons
         }
     }
 
+    static string? ChromeDbPath
+    {
+        get
+        {
+            var baseDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Google", "Chrome", "User Data");
+            var def = Path.Combine(baseDir, "Default", "Favicons");
+            if (File.Exists(def)) return def;
+            if (Directory.Exists(baseDir))
+            {
+                foreach (var d in Directory.GetDirectories(baseDir, "Profile *").OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+                {
+                    var p = Path.Combine(d, "Favicons");
+                    if (File.Exists(p)) return p;
+                }
+            }
+            return null;
+        }
+    }
+
     /// <summary>Runs off the UI thread. Returns (cache key, PNG bytes) pairs for the given bookmark URLs.</summary>
-    public static List<(string key, byte[] png)> Load(IEnumerable<string> bookmarkUrls)
+    public static List<(string key, byte[] png)> Load(IEnumerable<string> bookmarkUrls) => LoadFromDb(DbPath, bookmarkUrls);
+
+    /// <summary>Runs off the UI thread. Reads site icons from Chrome's "Favicons" SQLite database.</summary>
+    public static List<(string key, byte[] png)> LoadChrome(IEnumerable<string> bookmarkUrls) => LoadFromDb(ChromeDbPath, bookmarkUrls);
+
+    static List<(string key, byte[] png)> LoadFromDb(string? src, IEnumerable<string> bookmarkUrls)
     {
         var result = new List<(string, byte[])>();
-        var src = DbPath;
         if (src == null) return result;
 
         // Opera may have the database open: copy it first (shared read) and query the copy.
