@@ -134,7 +134,7 @@ def main():
     sq.paste(img, ((side - img.width) // 2, (side - img.height) // 2))
 
     # ---- frame inside a modern Obsidian Glass squircle tile ----------------
-    size, pad = 512, 24
+    size, pad = 512, 10
     tile = size - pad * 2
     rad = int(tile * 0.23)
 
@@ -148,21 +148,21 @@ def main():
     yy, xx = np.mgrid[0:size, 0:size].astype(np.float64)
     t = np.clip((yy - pad) / tile, 0, 1)
     td = np.clip(0.75 * t + 0.25 * np.clip((xx - pad) / tile, 0, 1), 0, 1)
-    top_rgb, bot_rgb, glow_rgb = (38.0, 38.0, 48.0), (18.0, 18.0, 24.0), (110.0, 92.0, 235.0)
+    top_rgb, bot_rgb, glow_rgb = (40.0, 40.0, 52.0), (19.0, 19.0, 26.0), (115.0, 96.0, 240.0)
     bg = np.zeros((size, size, 4), dtype=np.float64)
     for c in range(3):
         bg[..., c] = top_rgb[c] * (1 - td) + bot_rgb[c] * td
     bg[..., 3] = 255.0
 
     dist = np.sqrt(((xx - size * 0.48) / (tile * 0.55)) ** 2 + ((yy - size * 0.50) / (tile * 0.55)) ** 2)
-    glow = np.clip(1.0 - dist, 0, 1) ** 2.2 * 0.22
+    glow = np.clip(1.0 - dist, 0, 1) ** 2.2 * 0.24
     for c in range(3):
         bg[..., c] = bg[..., c] * (1 - glow) + glow_rgb[c] * glow
 
     # tile drop shadow + tile body
     big = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    sh_mask = mask.filter(ImageFilter.GaussianBlur(10))
-    big.paste(Image.new("RGBA", (size, size), (0, 0, 0, 75)), (0, 6), sh_mask)
+    sh_mask = mask.filter(ImageFilter.GaussianBlur(5))
+    big.paste(Image.new("RGBA", (size, size), (0, 0, 0, 70)), (0, 3), sh_mask)
     tile_img = Image.fromarray(np.clip(bg, 0, 255).astype(np.uint8), "RGBA")
     tile_img.putalpha(mask)
     big.alpha_composite(tile_img)
@@ -172,14 +172,14 @@ def main():
     rim = Image.new("RGBA", (s2, s2), (0, 0, 0, 0))
     ImageDraw.Draw(rim).rounded_rectangle(
         [pad * 2 + 2, pad * 2 + 2, s2 - pad * 2 - 3, s2 - pad * 2 - 3],
-        radius=rad * 2 - 2, outline=(255, 255, 255, 48), width=4
+        radius=rad * 2 - 2, outline=(255, 255, 255, 62), width=4
     )
     rim_arr = np.asarray(rim.resize((size, size), Image.LANCZOS)).astype(np.float64)
-    rim_arr[..., 3] *= np.clip(1.0 - 0.65 * t, 0.3, 1.0)
+    rim_arr[..., 3] *= np.clip(1.0 - 0.60 * t, 0.35, 1.0)
     big.alpha_composite(Image.fromarray(np.clip(rim_arr, 0, 255).astype(np.uint8), "RGBA"))
 
     # Mizar stars centred inside the tile
-    st_sz = int(tile * 0.78)
+    st_sz = int(tile * 0.82)
     big.alpha_composite(sq.resize((st_sz, st_sz), Image.LANCZOS), ((size - st_sz) // 2 + 4, (size - st_sz) // 2))
 
     big.save(ROOT / "assets" / "icon.png")
