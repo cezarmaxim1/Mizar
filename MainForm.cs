@@ -24,7 +24,7 @@ public partial class MainForm : Form
     /// <summary>Background tabs are suspended (TrySuspendAsync) after SleepAfter.</summary>
     const bool TabSleeping = true;
     /// <summary>Ad and tracker requests are filtered (AddWebResourceRequestedFilter per AdBlocker domain).</summary>
-    const bool AdFilter = false;
+    const bool AdFilter = true;
 
     Task<CoreWebView2Environment>? envTask;
     /// <summary>Bumped when the engine is restarted, so late events from the dead engine are ignored.</summary>

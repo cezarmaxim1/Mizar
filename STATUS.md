@@ -83,7 +83,9 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
    - **(a) ruled out:** with it off, Gmail stalled again on 2026-11-19 18:07, 2.5 min after start (same black box: `running=starting`). It is back on. Two stalls 8 min apart, the second right after a restart that followed a heal (fresh worker registration), so stalls can come within minutes.
    - **(b), (c), (d) ruled out:** all three off from 2026-11-19 18:10; Gmail stalled on 2026-11-20 08:12 (same black box, heal clean; Mizar had been open overnight). All three are back on.
    - **Engine versions match:** WebView2 Runtime and Edge are both 157.0.4341.60, so Edge is a fair control. **The owner keeps Gmail open in Edge from 2026-11-20.** If Edge stalls too, the cause is the engine or the account, not Mizar.
-   - **Running now: `TabSleeping` back on (`2026-11-23 20:48`), `AdFilter` still off.**
+   - **`TabSleeping` cleared:** back on from 2026-11-23 20:48 with `AdFilter` still off; no Gmail stall in ~3 days (to 2026-11-26 18:30).
+   - **Running now: `AdFilter` back on too (2026-11-26 18:40), the confirmation test.** No Gmail stall at all from 2026-11-20 08:17 to now (~6 days) while the filter was off; before, stalls came every 1–3 days. Stall within ~3 days → the ad filter (`AddWebResourceRequestedFilter` + `WebResourceRequested`) is the trigger, and the fix is a way to block ads that leaves Gmail alone. No stall → it was something else that went away.
+   - Former running note: `TabSleeping` back on (`2026-11-23 20:48`), `AdFilter` still off.
      - Both were off from `2026-11-20 08:17` to `2026-11-23 20:48` (**~84 h / 3.5 days, zero Gmail stalls**). Release 1.0.4 shipped with both off.
      - Turning them back on one at a time: `TabSleeping = true` first (`diag.log` shows `tabSleeping=on adFilter=off`).
      - Stall now → `TabSleeping` is the trigger. No stall for 3–4 days → turn `AdFilter = true` next to test the `WebResourceRequested` filter.
@@ -99,6 +101,8 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
    - or run `Mizar.exe --netdiag <out.txt>`: three phases (as is, after a flush, after a worker reset).
 
 ## Known bugs and loose ends
+
+- **Third-party cookie blocking stays OFF for the owner** (owner, 2026-11-26): with it on, Google signed them out almost daily. `diag.log` start lines show `3pcBlock=False`. The setting defaults to on for new installs.
 
 - **Focus ring on the page's first link after switching tabs** (2026-11-20, e.g. "Skip to main content" on Reddit). Cause, read from the WinForms WebView2 IL: `Select(directed: true)` stores `MoveFocus(Next)`, and hiding the focused old WebView made WinForms select the next control that way. `Activate` now focuses the new tab before hiding the old one. Not reproducible in a self-test (no foreground window); awaits the owner's check.
 
