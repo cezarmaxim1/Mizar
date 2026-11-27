@@ -624,6 +624,17 @@ static class AdBlocker
         foreach (var p in TrackerPatterns) yield return p;
     }
 
+    /// <summary>
+    /// Block list for CDP Network.setBlockedURLs: two patterns per domain (bare + subdomains), so
+    /// look-alikes ("notdomain.com") aren't hit, plus the Facebook Pixel paths.
+    /// </summary>
+    public static IEnumerable<string> PagePatterns(bool ads, bool trackers)
+    {
+        var domains = (ads ? Domains : []).Concat(trackers ? TrackerDomains : []);
+        foreach (var d in domains) { yield return $"*://{d}/*"; yield return $"*://*.{d}/*"; }
+        if (trackers) foreach (var p in TrackerPatterns) yield return p;
+    }
+
     public static Kind Classify(string url)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var u)) return Kind.None;

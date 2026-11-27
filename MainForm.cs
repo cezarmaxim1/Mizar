@@ -24,7 +24,13 @@ public partial class MainForm : Form
     /// <summary>Background tabs are suspended (TrySuspendAsync) after SleepAfter.</summary>
     const bool TabSleeping = true;
     /// <summary>Ad and tracker requests are filtered (AddWebResourceRequestedFilter per AdBlocker domain).</summary>
-    const bool AdFilter = true;
+    const bool AdFilter = false;
+    /// <summary>
+    /// Ads and trackers are blocked inside each page (CDP Network.setBlockedURLs) instead of through
+    /// AddWebResourceRequestedFilter, which was confirmed on 2026-11-27 to trigger the Gmail stall.
+    /// Needs the Network domain on in every tab, so SetNetWatch no longer turns it off.
+    /// </summary>
+    const bool PageAdBlock = true;
 
     Task<CoreWebView2Environment>? envTask;
     /// <summary>Bumped when the engine is restarted, so late events from the dead engine are ignored.</summary>
@@ -1457,6 +1463,7 @@ public partial class MainForm : Form
             // the engine route worker requests through this window, and Gmail's service worker was found
             // wedged on 2026-11-15 with all its image/font fetches pending (see NetRepair.cs).
             cw.AddWebResourceRequestedFilter(pattern, CoreWebView2WebResourceContext.All, CoreWebView2WebResourceRequestSourceKinds.Document);
+        if (IsSelfTest) WirePageAdBlockCounter(tab, cw); // diagnostics only: it parses every request
         cw.WebResourceRequested += (_, e) =>
         {
             var served = InternalPages.Serve(e.Request.Uri, history);
@@ -1496,6 +1503,7 @@ public partial class MainForm : Form
     void ApplySettings(CoreWebView2 cw)
     {
         ApplyColorScheme(cw);
+        if (PageAdBlock) _ = ApplyPageAdBlock(cw);
         cw.Settings.IsPasswordAutosaveEnabled = settings.SavePasswords;
         cw.Settings.IsGeneralAutofillEnabled = settings.SavePasswords;
     }
@@ -1524,6 +1532,76 @@ public partial class MainForm : Form
     }
 
     readonly bool thirdPartyBlockedAtStart;
+
+    /// <summary>"urlPatterns" (URLPattern syntax) or "urls" (older wildcard form), whichever the engine took.</summary>
+    static string? blockListMode;
+
+    /// <summary>Network.enable without buffering response bodies or post data (they'd cost RAM per tab).</summary>
+    const string NetEnableArgs = "{\"maxTotalBufferSize\":0,\"maxResourceBufferSize\":0,\"maxPostDataSize\":0}";
+
+    /// <summary>
+    /// Sends the ad/tracker block list to the page (Blink checks it before each request; nothing is
+    /// routed through Mizar). Response bodies aren't buffered: the Network domain is on only for this.
+    /// </summary>
+    async Task ApplyPageAdBlock(CoreWebView2 cw)
+    {
+        try
+        {
+            await cw.CallDevToolsProtocolMethodAsync("Network.enable",
+                NetEnableArgs);
+            var patterns = AdBlocker.PagePatterns(settings.BlockAds, settings.BlockTrackers).ToList();
+            if (blockListMode != "urls")
+            {
+                try
+                {
+                    var items = patterns.Select(p => new { urlPattern = p, block = true });
+                    await cw.CallDevToolsProtocolMethodAsync("Network.setBlockedURLs",
+                        System.Text.Json.JsonSerializer.Serialize(new { urlPatterns = items }));
+                    if (blockListMode == null) DiagLog.Write($"page ad block: urlPatterns n={patterns.Count}");
+                    blockListMode = "urlPatterns";
+                    return;
+                }
+                catch when (blockListMode == null) { blockListMode = "urls"; }
+            }
+            await cw.CallDevToolsProtocolMethodAsync("Network.setBlockedURLs",
+                System.Text.Json.JsonSerializer.Serialize(new { urls = patterns }));
+            DiagLog.Write($"page ad block: urls n={patterns.Count}");
+        }
+        catch (Exception ex) { ErrorLog.Write("PageAdBlock", ex); }
+    }
+
+    void WirePageAdBlockCounter(BrowserTab tab, CoreWebView2 cw)
+    {
+        if (!PageAdBlock) return;
+        var sent = cw.GetDevToolsProtocolEventReceiver("Network.requestWillBeSent");
+        var fail = cw.GetDevToolsProtocolEventReceiver("Network.loadingFailed");
+        tab.Receivers.AddRange(new object[] { sent, fail });
+        var urls = new Dictionary<string, string>();
+        sent.DevToolsProtocolEventReceived += (_, e) =>
+        {
+            if (urls.Count > 500) urls.Clear();
+            try
+            {
+                using var d = System.Text.Json.JsonDocument.Parse(e.ParameterObjectAsJson);
+                var url = d.RootElement.GetProperty("request").GetProperty("url").GetString();
+                if (url != null && AdBlocker.Classify(url) != AdBlocker.Kind.None &&
+                    d.RootElement.GetProperty("requestId").GetString() is { } id) urls[id] = url;
+            }
+            catch { }
+        };
+        fail.DevToolsProtocolEventReceived += (_, e) =>
+        {
+            try
+            {
+                using var d = System.Text.Json.JsonDocument.Parse(e.ParameterObjectAsJson);
+                var r = d.RootElement;
+                if (r.GetProperty("requestId").GetString() is not { } id || !urls.Remove(id, out var url)) return;
+                if (!r.TryGetProperty("blockedReason", out var b) || b.GetString() != "inspector") return;
+                if (AdBlocker.Classify(url) == AdBlocker.Kind.Ad) AdBlocker.BlockedAds++; else AdBlocker.BlockedTrackers++;
+            }
+            catch { }
+        };
+    }
 
     /// <summary>Diagnostics: mizar.exe --selftest &lt;url&gt; &lt;outfile&gt; loads a page, dumps results, exits.</summary>
     async Task RunSelfTest(CoreWebView2 cw, string outFile)

@@ -70,7 +70,8 @@ public partial class MainForm
         tab.InFlight.Clear();
         try
         {
-            await cw.CallDevToolsProtocolMethodAsync(on ? "Network.enable" : "Network.disable", "{}");
+            // with PageAdBlock the domain stays on in every tab (the block list needs it)
+            if (!PageAdBlock) await cw.CallDevToolsProtocolMethodAsync(on ? "Network.enable" : "Network.disable", "{}");
         }
         catch (Exception ex) { ErrorLog.Write("NetWatch", ex); }
     }
@@ -333,11 +334,11 @@ public partial class MainForm
         {
             DiagLog.Write($"blackbox {host} page: {await Eval(cw, PageBox)}");
 
-            await Cdp(cw, "Network.enable", "{}");
+            await Cdp(cw, "Network.enable", NetEnableArgs);
             await Cdp(cw, "Network.setBypassServiceWorker", "{\"bypass\":true}");
             DiagLog.Write($"blackbox {host} fetch bypassing worker: {await Eval(cw, PageFetchOnly)}");
             await Cdp(cw, "Network.setBypassServiceWorker", "{\"bypass\":false}");
-            if (active?.Core == cw) await Cdp(cw, "Network.disable", "{}"); // background tabs keep their watch
+            if (active?.Core == cw && !PageAdBlock) await Cdp(cw, "Network.disable", "{}"); // background tabs keep their watch
 
             // the engine's view: versions and errors arrive as events once the domain is enabled
             var versions = new List<string>(); var errors = new List<string>();
@@ -480,7 +481,7 @@ public partial class MainForm
         rFail.DevToolsProtocolEventReceived += Failed;
         try
         {
-            await cw.CallDevToolsProtocolMethodAsync("Network.enable", "{}");
+            await cw.CallDevToolsProtocolMethodAsync("Network.enable", NetEnableArgs);
 
             async Task Phase(string name)
             {
@@ -499,7 +500,7 @@ public partial class MainForm
             await Phase("after flush");
             sb.AppendLine("service workers: " + await ResetServiceWorkers(cw));
             await Phase("after service worker reset");
-            try { await cw.CallDevToolsProtocolMethodAsync("Network.disable", "{}"); } catch { }
+            if (!PageAdBlock) try { await cw.CallDevToolsProtocolMethodAsync("Network.disable", "{}"); } catch { }
         }
         catch (Exception ex) { sb.AppendLine("error: " + ex.Message); }
         finally

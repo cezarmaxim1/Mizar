@@ -38,7 +38,7 @@ Rules, commands and traps are in `AGENTS.md`. Open problems are in `STATUS.md`.
 
 - **Startup:** `Program` → `MainForm` → `Shown`. If `RestoreSession` is on, saved tabs come back lazily (title and icon only); otherwise one home-page tab opens. Then the pipe queue is drained, history cleared (if `ClearHistoryOnExit`), and the one-time jobs run (Opera favicons, Drive sync, update check one minute after start).
 - **Tab start:** `InitTab` → `EnsureCoreWebView2Async(sharedEnv)` → `Wire` (events, filters, injected shortcut script) → `Navigate`. A lazy tab does this on its first `Activate`.
-- **Requests:** `AddWebResourceRequestedFilter` with one pattern per ad or tracker domain (source kind `Document`). Only matching requests reach .NET, where `AdBlocker.Classify` decides by exact host. Requests for `mizar.internal` are served by `InternalPages.Serve`.
+- **Requests:** ads and trackers are blocked inside each page: `ApplyPageAdBlock` turns on the CDP `Network` domain (no body buffering) and sends `AdBlocker.PagePatterns` through `Network.setBlockedURLs`. The domain then stays on in every tab, so `SetNetWatch` only flips its flag. Requests for `mizar.internal` are the only ones routed through `WebResourceRequested` (served by `InternalPages.Serve`). The old route, `AddWebResourceRequestedFilter` per ad domain (`AdFilter`), triggered the Gmail stall (confirmed 2026-11-27).
 - **Background tab:**
   1. When hidden: `MemoryUsageTargetLevel.Low`, and CDP `Network` turns on to track `InFlight`.
   2. After `SleepAfter` (5 min) with no audio and no request in flight: `TrySuspendAsync`.
