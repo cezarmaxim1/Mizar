@@ -32,6 +32,7 @@ Rules, commands and traps are in `AGENTS.md`. Open problems are in `STATUS.md`.
 | `DriveSync.cs` | Bookmark sync to `mizar-bookmarks.json` on Google Drive: REST v3, OAuth PKCE through a loopback listener, `drive.file` scope, tokens encrypted with DPAPI. |
 | `AppServices.cs` | `InternalPages` (`/history`, `/crashed`), `ErrorLog` (`errors.log`, rotated at 512 KB), `DiagLog` (`diag.log`, rotated at 256 KB), `SingleInstance`, `DefaultBrowser`. |
 | `NetRepair.cs` | Background network watch (`WireNetWatch`/`SetNetWatch`, `InFlight`), `FlushSockets`, `ResetServiceWorkers`, `RepairConnection`, `PageProbe`, `LogSlowLoad` → `WedgedWorker` → `HealWedgedWorker`, `BlackBox` (helpers `Cdp`, `Eval`), `OnPowerModeChanged`, `RunNetDiag`. |
+| `YouTubeBlock.cs` + `YouTubeBuild.js` | YouTube ads, uBlock Origin's way, without the extension. About once a day: latest uBO release from GitHub (only `js/`, `lib/`) + uBO filters, quick fixes, unbreak and EasyList into `<data>\ytblock\work`. A hidden WebView (folder mapping `ytbuild.mizar.internal`) runs `YouTubeBuild.js`, which uses uBO's own parser and `make-scriptlets.js` to keep only YouTube rules and emit one script (scriptlets + hiding CSS in a constructed stylesheet) → `ytblock\youtube.js`. Every tab gets it via `AddScriptToExecuteOnDocumentCreated`; it returns at once outside youtube.com / youtube-nocookie.com. On only while "Blochează reclamele" is on. |
 | `Updater.cs` | `Updater`: GitHub Releases check, ECDSA verify, stage, swap on exit, `--release-genkey`/`--release-sign`. |
 
 ## Data flows

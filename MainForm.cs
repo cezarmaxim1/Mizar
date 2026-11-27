@@ -227,6 +227,7 @@ public partial class MainForm : Form
             if (firstRun) _ = PrefetchFavicons();
             if (DriveSync.IsConnected(settings)) _ = SyncBookmarksAsync(silent: true);
             _ = AutoCheckForUpdates();
+            if (!IsSelfTest) _ = AutoUpdateYouTubeBlock();
         };
         FormClosing += async (_, e) =>
         {
@@ -1318,6 +1319,8 @@ public partial class MainForm : Form
 
         var cw = tab.View.CoreWebView2;
         Wire(tab, cw);
+        await AddYouTubeScript(cw); // before the first navigation, so the first YouTube page is covered
+        if (tab.View.IsDisposed || !tabs.Contains(tab)) { deferral?.Complete(); return false; }
         if (tab != active && LowMemoryForHiddenTabs) cw.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
 
         if (nw != null)
@@ -1534,6 +1537,42 @@ public partial class MainForm : Form
     }
 
     readonly bool thirdPartyBlockedAtStart;
+
+    // ---------- YouTube ads (YouTubeBlock.cs) ----------
+
+    readonly System.Runtime.CompilerServices.ConditionalWeakTable<CoreWebView2, string> ytScripts = new();
+
+    /// <summary>Adds (or replaces) the YouTube script in a tab; removes it when ad blocking is off.</summary>
+    async Task AddYouTubeScript(CoreWebView2 cw)
+    {
+        try
+        {
+            if (ytScripts.TryGetValue(cw, out var old)) { ytScripts.Remove(cw); cw.RemoveScriptToExecuteOnDocumentCreated(old); }
+            if (!settings.BlockAds || YouTubeBlock.Payload is not { } js) return;
+            ytScripts.AddOrUpdate(cw, await cw.AddScriptToExecuteOnDocumentCreatedAsync(js));
+        }
+        catch (Exception ex) { ErrorLog.Write("YouTube script", ex); }
+    }
+
+    /// <summary>About once a day (checked at start and every 6 h): fresh uBO code and lists, rebuilt script.</summary>
+    async Task AutoUpdateYouTubeBlock()
+    {
+        await Task.Delay(TimeSpan.FromMinutes(1));
+        while (!IsDisposed)
+        {
+            if (settings.BlockAds && YouTubeBlock.Due()) await UpdateYouTubeBlock();
+            await Task.Delay(TimeSpan.FromHours(6));
+        }
+    }
+
+    async Task UpdateYouTubeBlock()
+    {
+        if (envTask == null) return;
+        var status = await YouTubeBlock.UpdateAsync(await envTask, Handle);
+        DiagLog.Write("youtube block: " + status);
+        foreach (var t in tabs)
+            if (t.Core != null) await AddYouTubeScript(t.Core); // applies from each tab's next page load
+    }
 
     /// <summary>"urlPatterns" (URLPattern syntax) or "urls" (older wildcard form), whichever the engine took.</summary>
     static string? blockListMode;
@@ -1754,8 +1793,17 @@ public partial class MainForm : Form
             await Task.Delay(1500);
             keys += $"focus: after switch back -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(probe))}\n";
         }
-        if (startArgs.Contains("--exttest") || startArgs.Contains("--admarkers"))
+        if (startArgs.Contains("--exttest") || startArgs.Contains("--admarkers") || startArgs.Contains("--ytupdate"))
         {
+            // --ytupdate: build the YouTube script now (YouTubeBlock), add it to this tab, reload, then sample
+            if (startArgs.Contains("--ytupdate"))
+            {
+                var st = await YouTubeBlock.UpdateAsync(await envTask!, Handle);
+                keys += $"youtube block: {st}\n";
+                await AddYouTubeScript(cw);
+                cw.Reload();
+                await Task.Delay(12000);
+            }
             // --exttest: load the unpacked extension in MIZAR_EXT_DIR, reload, then sample YouTube ad markers.
             // --admarkers: the same sampling without an extension (baseline).
             if (startArgs.Contains("--exttest"))
@@ -1776,10 +1824,11 @@ public partial class MainForm : Form
                 cw.Reload();
                 await Task.Delay(12000);
             }
-            const string probe = "(() => { const q = s => document.querySelectorAll(s).length; " +
+            // counts only visible elements (hidden ones are blocked)
+            const string probe = "(() => { const q = s => [...document.querySelectorAll(s)].filter(e => e.getClientRects().length).length; " +
                 "return `adShowing=${q('.ad-showing,.ad-interrupting')} adSlots=${q('ytd-ad-slot-renderer,ytd-in-feed-ad-layout-renderer')} " +
                 "playerAds=${q('#player-ads > *')} promo=${q('ytd-banner-promo-renderer,ytd-statement-banner-renderer')} " +
-                "video=${q('video')} host=${location.host}`; })()";
+                "video=${document.querySelectorAll('video').length} host=${location.host}`; })()";
             for (int i = 0; i < 10; i++)
             {
                 keys += $"ads t={i * 3}s: {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(probe))}\n";

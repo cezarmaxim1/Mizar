@@ -102,6 +102,12 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
    - open `edge://serviceworker-internals` in a Mizar tab and note the `mail.google.com` entry's status and its log;
    - or run `Mizar.exe --netdiag <out.txt>`: three phases (as is, after a flush, after a worker reset).
 
+## YouTube ads
+
+- **2026-11-27: built in, without the extension** (`YouTubeBlock.cs`, owner's choice: uBO's own lists and code, auto-updated daily, no extension that MV2's end could break). Verified on an isolated profile, not signed in: same video, pre-roll + sponsored card before, none after (0 ad markers over 30 s, video plays). Build: 39 scriptlets, 19 hiding rules, ~100 KB.
+- Not verified: signed in to YouTube, and home-page feed ads (none showed signed out, even without blocking).
+- Bug found while building: uBO's `getExtFilterDomainIterator()` reuses one object per item; copying with `Array.from` gave every rule only its last domain.
+
 ## uBlock Origin (MV2) feasibility
 
 - **2026-11-27: it loads and works in WebView2 157.** uBlock Origin 1.77.2 (`uBlock0_1.77.2.chromium.zip` from GitHub `gorhill/uBlock`, Manifest V2) loaded unpacked with `AreBrowserExtensionsEnabled` + `AddBrowserExtensionAsync`, enabled. YouTube video, isolated profile, not signed in: with it, 0 ad markers over 30 s and the video played; without it, a pre-roll ad (`ad-showing`, `#player-ads`) and a sponsored card. Not built into Mizar yet; the owner accepted the background-page RAM cost.
