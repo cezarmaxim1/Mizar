@@ -5,9 +5,34 @@ namespace Mizar;
 
 public partial class MainForm : Form
 {
-    readonly Settings settings = Settings.Load();
-    readonly BookmarkStore bookmarks = BookmarkStore.Load();
-    readonly bool firstRun = !BookmarkStore.Exists;
+    readonly Settings settings;
+    readonly BookmarkStore bookmarks;
+    readonly bool firstRun;
+
+    // ---------- Private windows (Ctrl+Shift+N) ----------
+    // A private window is a second MainForm that shares the main window's settings, bookmarks and
+    // engine, but whose tabs use an InPrivate profile: no cookies, logins or cache of the main
+    // profile, and everything is dropped when the last private tab closes. It writes nothing to
+    // disk: no history, session, zoom, favicons, and diag.log gets "private" instead of hosts.
+    /// <summary>True for a private window.</summary>
+    public bool IsPrivate { get; }
+    readonly MainForm? mainWindow;
+    readonly List<MainForm> privateWindows = new();
+    const string PrivateProfile = "mizar-private";
+    Action? onBookmarksChanged;
+
+    /// <summary>diag.log stand-in for a host: private windows never log where they went.</summary>
+    string DH(string host) => IsPrivate ? "private" : host;
+    string DiagHost(string? url) => IsPrivate ? "private" : Bookmark.HostOf(url ?? "");
+
+    /// <summary>Ctrl+Shift+N: a new private window (always owned by the main window).</summary>
+    void OpenPrivateWindow()
+    {
+        var main = mainWindow ?? this;
+        var w = new MainForm(startArgs.Where(a => a.StartsWith('-')).ToArray(), main);
+        main.privateWindows.Add(w);
+        w.Show();
+    }
     /// <summary>Hidden tabs get MemoryUsageTargetLevel.Low (ruled out for the Gmail stall on 2026-11-19).</summary>
     const bool LowMemoryForHiddenTabs = true;
 
@@ -70,12 +95,20 @@ public partial class MainForm : Form
 
     int S(int v) => (int)Math.Round(v * DeviceDpi / 96f);
 
-    public MainForm(string[] args)
+    public MainForm(string[] args) : this(args, null) { }
+
+    MainForm(string[] args, MainForm? main)
     {
         startArgs = args;
-        history.ReadOnly = IsSelfTest && !AppPaths.IsCustomRoot; // tests on real data must not write history
+        mainWindow = main;
+        IsPrivate = main != null;
+        settings = main?.settings ?? Settings.Load();
+        bookmarks = main?.bookmarks ?? BookmarkStore.Load();
+        firstRun = !IsPrivate && !BookmarkStore.Exists;
+        if (main != null) envTask = main.envTask;
+        history.ReadOnly = IsPrivate || IsSelfTest && !AppPaths.IsCustomRoot; // tests on real data must not write history
         thirdPartyBlockedAtStart = settings.BlockThirdPartyCookies;
-        Text = "Mizar";
+        Text = IsPrivate ? "Mizar – privat" : "Mizar";
         BackColor = Color.White;
         Theme.Dpi = appliedDpi = DeviceDpi;
         Font = Theme.UiFont(9f, DeviceDpi);
@@ -84,6 +117,14 @@ public partial class MainForm : Form
         Size = new Size(S(1280), S(820));
         StartPosition = FormStartPosition.CenterScreen;
         RestoreWindow();
+        if (main != null)
+        {
+            // cascade from the main window, never maximized over it
+            WindowState = FormWindowState.Normal;
+            StartPosition = FormStartPosition.Manual;
+            var r = main.WindowState == FormWindowState.Normal ? main.Bounds : main.RestoreBounds;
+            Bounds = new Rectangle(r.X + S(32), r.Y + S(32), r.Width, r.Height);
+        }
         lastWindowState = WindowState == FormWindowState.Minimized ? FormWindowState.Normal : WindowState;
 
         globe = Icons.Globe(S(16));
@@ -157,7 +198,10 @@ public partial class MainForm : Form
         sessionTimer.Start();
         driveUploadTimer.Tick += OnDriveUploadTick;
 
-        bookmarks.Changed += () => { RebuildBookmarkBar(); if (!applyingRemoteSync && !IsSelfTest && DriveSync.IsConnected(settings)) ScheduleDriveUpload(); };
+        onBookmarksChanged = IsPrivate
+            ? RebuildBookmarkBar
+            : () => { RebuildBookmarkBar(); if (!applyingRemoteSync && !IsSelfTest && DriveSync.IsConnected(settings)) ScheduleDriveUpload(); };
+        bookmarks.Changed += onBookmarksChanged;
         if (firstRun)
         {
             try { bookmarks.ImportFromOpera(); } catch { }
@@ -168,6 +212,7 @@ public partial class MainForm : Form
         Shown += async (_, _) =>
         {
             ApplyDpi();
+            if (IsPrivate) { sessionReady = true; await NewTabFocused(); return; }
             var url = startArgs.FirstOrDefault(a => !a.StartsWith('-'));
             if (IsSelfTest)
             {
@@ -231,7 +276,7 @@ public partial class MainForm : Form
         };
         FormClosing += async (_, e) =>
         {
-            if (cookiesLoggedAtClose) return;
+            if (cookiesLoggedAtClose || IsPrivate) return;
             cookiesLoggedAtClose = true;
             e.Cancel = true;
             await LogGoogleCookies("close");
@@ -240,7 +285,9 @@ public partial class MainForm : Form
         // self-tests must never touch the owner's settings, history or session
         FormClosing += (_, e) =>
         {
-            if (e.Cancel || IsSelfTest) return;
+            if (e.Cancel) return;
+            foreach (var w in privateWindows.ToList()) w.Close(); // they live only as long as the main window
+            if (IsSelfTest || IsPrivate) return;
             SaveWindow();
             if (settings.ClearHistoryOnExit) history.Clear(); else history.Flush();
             sessionDirty = true;
@@ -253,6 +300,8 @@ public partial class MainForm : Form
         {
             Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
             Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            if (onBookmarksChanged != null) bookmarks.Changed -= onBookmarksChanged;
+            mainWindow?.privateWindows.Remove(this);
             sleepTimer.Stop(); sleepTimer.Dispose();
             zoomPoll.Stop(); zoomPoll.Dispose();
             sessionTimer.Stop(); sessionTimer.Dispose();
@@ -380,6 +429,9 @@ public partial class MainForm : Form
         zoomChip.Height = S(30);
         zoomChip.Margin = new Padding(0, 0, S(2), 0);
         zoomChip.FitWidth();
+        privateChip.Height = S(30);
+        privateChip.Margin = new Padding(S(6), 0, 0, 0);
+        privateChip.FitWidth();
         bar.Font = Theme.UiFont(9f, DeviceDpi);
         bar.Padding = new Padding(S(8), 0, S(8), S(2));
         bar.ImageScalingSize = new Size(S(16), S(16));
@@ -490,7 +542,7 @@ public partial class MainForm : Form
             foreach (var kv in t.InFlight.Where(kv => (now - kv.Value).TotalSeconds > 60).ToList())
                 t.InFlight.Remove(kv.Key);
             if (t.InFlight.Count > 0) continue;
-            try { if (await cw.TrySuspendAsync()) DiagLog.Write("sleep " + Bookmark.HostOf(t.Url)); } catch { }
+            try { if (await cw.TrySuspendAsync()) DiagLog.Write("sleep " + DiagHost(t.Url)); } catch { }
         }
     }
 
@@ -552,19 +604,30 @@ public partial class MainForm : Form
         zoomChip.Visible = false;
         zoomChip.Click += (_, _) => ShowZoomMenu();
 
-        nav.ColumnCount = 8;
-        for (int i = 0; i < 8; i++)
-            nav.ColumnStyles.Add(i == 4 ? new ColumnStyle(SizeType.Percent, 100) : new ColumnStyle(SizeType.AutoSize));
+        // private windows show a "Privat" chip before the address box
+        privateChip.Text = "Privat";
+        privateChip.Height = S(30);
+        privateChip.Anchor = AnchorStyles.None;
+        privateChip.Margin = new Padding(S(6), 0, 0, 0);
+        privateChip.Visible = IsPrivate;
+        tips.SetToolTip(privateChip, "Fereastră privată: fără istoric, iar cookie-urile și login-urile se șterg când o închizi");
+
+        nav.ColumnCount = 9;
+        for (int i = 0; i < 9; i++)
+            nav.ColumnStyles.Add(i == 5 ? new ColumnStyle(SizeType.Percent, 100) : new ColumnStyle(SizeType.AutoSize));
         nav.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         nav.Controls.Add(btnBack, 0, 0);
         nav.Controls.Add(btnFwd, 1, 0);
         nav.Controls.Add(btnReload, 2, 0);
         nav.Controls.Add(btnHome, 3, 0);
-        nav.Controls.Add(addressBox, 4, 0);
-        nav.Controls.Add(zoomChip, 5, 0);
-        nav.Controls.Add(btnStar, 6, 0);
-        nav.Controls.Add(btnMenu, 7, 0);
+        nav.Controls.Add(privateChip, 4, 0);
+        nav.Controls.Add(addressBox, 5, 0);
+        nav.Controls.Add(zoomChip, 6, 0);
+        nav.Controls.Add(btnStar, 7, 0);
+        nav.Controls.Add(btnMenu, 8, 0);
     }
+
+    readonly TextChip privateChip = new();
 
     // ---------- Zoom (remembered per site) ----------
 
@@ -603,7 +666,7 @@ public partial class MainForm : Form
         {
             tab.ExpectedZoom = z;
             var host = tab.ZoomHost ?? "";
-            if (host.Length > 0)
+            if (host.Length > 0 && !IsPrivate)
             {
                 if (Math.Abs(z - 1.0) < 0.004) settings.SiteZoom.Remove(host);
                 else settings.SiteZoom[host] = Math.Round(z, 3);
@@ -675,6 +738,7 @@ public partial class MainForm : Form
         zoom.DropDownItems.Add(Item("100%", "Ctrl+0", () => { if (active != null) SetUserZoom(active, 1.0); }));
 
         menu.Items.Add(Item("Tab nou", "Ctrl+T", () => _ = NewTabFocused()));
+        menu.Items.Add(Item("Fereastră privată nouă", "Ctrl+Shift+N", OpenPrivateWindow));
         menu.Items.Add(Item("Redeschide tabul închis", "Ctrl+Shift+T", ReopenClosed));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(bm);
@@ -710,13 +774,13 @@ public partial class MainForm : Form
 
     void SaveReopenOnce()
     {
-        if (IsSelfTest) return;
+        if (IsSelfTest || IsPrivate) return;
         BuildSessionData().Save(AppPaths.ReopenOnceFile);
     }
 
     void SaveSession()
     {
-        if (!sessionDirty || !sessionReady || IsSelfTest) return;
+        if (!sessionDirty || !sessionReady || IsSelfTest || IsPrivate) return;
         sessionDirty = false;
         if (!settings.RestoreSession)
         {
@@ -1304,7 +1368,14 @@ public partial class MainForm : Form
         {
             envTask ??= CoreWebView2Environment.CreateAsync(null, AppPaths.WebData, EngineOptions());
             var env = await envTask;
-            await tab.View.EnsureCoreWebView2Async(env);
+            if (IsPrivate)
+            {
+                var o = env.CreateCoreWebView2ControllerOptions();
+                o.IsInPrivateModeEnabled = true;
+                o.ProfileName = PrivateProfile;
+                await tab.View.EnsureCoreWebView2Async(env, o);
+            }
+            else await tab.View.EnsureCoreWebView2Async(env);
         }
         catch (Exception ex)
         {
@@ -1362,8 +1433,8 @@ public partial class MainForm : Form
         {
             tab.IsLoading = false;
             if (!e.IsSuccess && e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
-                DiagLog.Write($"nav failed {Bookmark.HostOf(cw.Source)} {e.WebErrorStatus} http={e.HttpStatusCode}");
-            if (e.IsSuccess && !IsSelfTest) history.Visit(cw.Source, cw.DocumentTitle);
+                DiagLog.Write($"nav failed {DiagHost(cw.Source)} {e.WebErrorStatus} http={e.HttpStatusCode}");
+            if (e.IsSuccess && !IsSelfTest && !IsPrivate) history.Visit(cw.Source, cw.DocumentTitle);
             TabChanged(tab);
         };
         // Keyboard shortcuts pressed while a web page has focus are caught in the page
@@ -1432,7 +1503,7 @@ public partial class MainForm : Form
         int gen = engineGen;
         cw.ProcessFailed += (_, e) =>
         {
-            DiagLog.Write($"process failed {e.ProcessFailedKind} reason={e.Reason} exit={e.ExitCode} host={Bookmark.HostOf(tab.Url)}");
+            DiagLog.Write($"process failed {e.ProcessFailedKind} reason={e.Reason} exit={e.ExitCode} host={DiagHost(tab.Url)}");
             if (e.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited)
             {
                 // every tab reports it: only the first report of this engine restarts it
@@ -1507,8 +1578,8 @@ public partial class MainForm : Form
     {
         ApplyColorScheme(cw);
         if (PageAdBlock) _ = ApplyPageAdBlock(cw);
-        cw.Settings.IsPasswordAutosaveEnabled = settings.SavePasswords;
-        cw.Settings.IsGeneralAutofillEnabled = settings.SavePasswords;
+        cw.Settings.IsPasswordAutosaveEnabled = settings.SavePasswords && !IsPrivate;
+        cw.Settings.IsGeneralAutofillEnabled = settings.SavePasswords && !IsPrivate;
     }
 
     /// <summary>
@@ -1835,6 +1906,32 @@ public partial class MainForm : Form
                 await Task.Delay(3000);
             }
         }
+        if (startArgs.Contains("--privatetest"))
+        {
+            // a cookie set in a private window: not in the main profile, gone once the window closes
+            const string site = "https://httpbin.org";
+            static async Task<int> Mine(CoreWebView2 c) =>
+                (await c.CookieManager.GetCookiesAsync(site)).Count(k => k.Name == "mizarprivate");
+            async Task<MainForm> Open()
+            {
+                OpenPrivateWindow();
+                var w = privateWindows[^1];
+                for (int i = 0; i < 40 && w.active?.Core == null; i++) await Task.Delay(250);
+                return w;
+            }
+            var pw = await Open();
+            var pc = pw.active!.Core!;
+            pc.Navigate(site + "/cookies/set?mizarprivate=1");
+            await Task.Delay(6000);
+            keys += $"private: window={pw.IsPrivate} inPrivate={pc.Profile.IsInPrivateModeEnabled} profile={pc.Profile.ProfileName} " +
+                    $"privateCookie={await Mine(pc)} mainCookie={await Mine(cw)} historyVisits={pw.history.NewestFirst().Count(h => h.Url.Contains("httpbin")) + history.NewestFirst().Count(h => h.Url.Contains("httpbin"))}\n";
+            pw.Close();
+            await Task.Delay(3000);
+            var pw2 = await Open();
+            keys += $"private: after close+reopen cookie={await Mine(pw2.active!.Core!)} windows={privateWindows.Count}\n";
+            pw2.Close();
+            await Task.Delay(1000);
+        }
         if (startArgs.Contains("--downloadtest"))
         {
             // a page with <a id=l href="x.pdf" download>: a link download must still follow the settings
@@ -2133,7 +2230,7 @@ public partial class MainForm : Form
 
             // Only overwrite cached bookmark icons when the page actually has a real favicon URI
             // (during initial load WebView2 fires FaviconChanged with an empty URI / generic globe).
-            if (string.IsNullOrEmpty(cw.FaviconUri)) return;
+            if (string.IsNullOrEmpty(cw.FaviconUri) || IsPrivate) return; // private visits leave no icons on disk
             var host = Bookmark.HostOf(cw.Source);
             bool updated = host.Length > 0 && FaviconCache.Save(host, img, overwrite: true);
             var urlKey = OperaFavicons.UrlKey(cw.Source);
@@ -2332,7 +2429,7 @@ public partial class MainForm : Form
     if (!e.ctrlKey || e.altKey || e.metaKey) return;
     const k = (e.key || '').toLowerCase();
     let c = null;
-    if (e.shiftKey) c = { t: 'reopen', b: 'bar', o: 'bookmarks', tab: 'prevtab' }[k];
+    if (e.shiftKey) c = { t: 'reopen', b: 'bar', o: 'bookmarks', n: 'private', tab: 'prevtab' }[k];
     else if (/^[1-9]$/.test(k)) c = 'tab' + k;
     else c = { h: 'history', t: 'newtab', w: 'close', d: 'bookmark', l: 'address', j: 'downloads', tab: 'nexttab' }[k];
     if (!c) return;
@@ -2350,6 +2447,7 @@ public partial class MainForm : Form
             case "newtab": _ = NewTabFocused(); break;
             case "close": if (active != null) CloseTab(active); break;
             case "reopen": ReopenClosed(); break;
+            case "private": OpenPrivateWindow(); break;
             case "bookmark": ToggleBookmark(); break;
             case "bar": ToggleBar(); break;
             case "bookmarks": OpenBookmarkManager(); break;
@@ -2544,7 +2642,7 @@ public partial class MainForm : Form
         // its Save As dialog, and ResultFilePath is where the owner chose. Asking again was the
         // "asks twice" bug of 2026-11-18. A link to a PDF is not affected: its Uri isn't the page's.
         bool viewerSave = sender is CoreWebView2 src && IsPdfViewerSave(src, e);
-        DiagLog.Write($"download {Bookmark.HostOf(e.DownloadOperation.Uri)} mime={e.DownloadOperation.MimeType} pdfViewerSave={viewerSave} ask={settings.AskWhereToSave}");
+        DiagLog.Write($"download {DiagHost(e.DownloadOperation.Uri)} mime={e.DownloadOperation.MimeType} pdfViewerSave={viewerSave} ask={settings.AskWhereToSave}");
         if (viewerSave) return;
 
         if (!settings.AskWhereToSave)
@@ -2757,6 +2855,7 @@ public partial class MainForm : Form
             case Keys.Control | Keys.W:
             case Keys.Control | Keys.F4: if (active != null) CloseTab(active); return true;
             case Keys.Control | Keys.Shift | Keys.T: ReopenClosed(); return true;
+            case Keys.Control | Keys.Shift | Keys.N: OpenPrivateWindow(); return true;
             case Keys.Control | Keys.L:
             case Keys.Alt | Keys.D:
             case Keys.F6: address.Focus(); address.SelectAll(); return true;

@@ -129,7 +129,7 @@ public partial class MainForm
         if (cw != null && before.Contains("sw=activated")) await BlackBox(cw, host);
         var flush = await FlushSockets();
         var sw = cw == null ? "no page" : await ResetServiceWorkers(cw);
-        DiagLog.Write($"repair {host}: before [{before}] flush={flush} sw={sw}");
+        DiagLog.Write($"repair {DH(host)}: before [{before}] flush={flush} sw={sw}");
         if (cw != null && (flush == "ok" || sw.StartsWith("unregister")))
         {
             try { cw.Reload(); } catch { }
@@ -197,7 +197,7 @@ public partial class MainForm
         {
             await Task.Delay(10000);
             if (IsDisposed) return;
-            DiagLog.Write($"repair {host}: after 10 s [{await PageProbe(cw)}]");
+            DiagLog.Write($"repair {DH(host)}: after 10 s [{await PageProbe(cw)}]");
         }
         catch { }
     }
@@ -216,7 +216,7 @@ public partial class MainForm
             var cw = tab.Core;
             var host = Bookmark.HostOf(tab.Url);
             var probe = await PageProbe(cw);
-            DiagLog.Write($"slow load {host}: {SlowLoadSeconds} s [{probe}] tabs={tabs.Count} asleep={tabs.Count(t => t.Core?.IsSuspended == true)}");
+            DiagLog.Write($"slow load {DH(host)}: {SlowLoadSeconds} s [{probe}] tabs={tabs.Count} asleep={tabs.Count(t => t.Core?.IsSuspended == true)}");
             if (WedgedWorker(probe)) await HealWedgedWorker(tab, cw, host);
         }
         catch { }
@@ -249,13 +249,13 @@ public partial class MainForm
     {
         if (lastHeal.TryGetValue(host, out var t) && DateTime.Now - t < TimeSpan.FromMinutes(5))
         {
-            DiagLog.Write($"heal {host}: skipped (healed {(DateTime.Now - t).TotalSeconds:0} s ago)");
+            DiagLog.Write($"heal {DH(host)}: skipped (healed {(DateTime.Now - t).TotalSeconds:0} s ago)");
             return;
         }
         lastHeal[host] = DateTime.Now;
         await BlackBox(cw, host); // evidence first: after the reset there is nothing left to look at
         var sw = await ResetServiceWorkers(cw);
-        DiagLog.Write($"heal {host}: service worker reset={sw}, reloading");
+        DiagLog.Write($"heal {DH(host)}: service worker reset={sw}, reloading");
         if (sw.StartsWith("error") || sw == "not a web page") return;
         try { cw.Reload(); } catch { }
         _ = LogAfterRepair(cw, host);
@@ -332,11 +332,11 @@ public partial class MainForm
     {
         try
         {
-            DiagLog.Write($"blackbox {host} page: {await Eval(cw, PageBox)}");
+            DiagLog.Write($"blackbox {DH(host)} page: {await Eval(cw, PageBox)}");
 
             await Cdp(cw, "Network.enable", NetEnableArgs);
             await Cdp(cw, "Network.setBypassServiceWorker", "{\"bypass\":true}");
-            DiagLog.Write($"blackbox {host} fetch bypassing worker: {await Eval(cw, PageFetchOnly)}");
+            DiagLog.Write($"blackbox {DH(host)} fetch bypassing worker: {await Eval(cw, PageFetchOnly)}");
             await Cdp(cw, "Network.setBypassServiceWorker", "{\"bypass\":false}");
             if (active?.Core == cw && !PageAdBlock) await Cdp(cw, "Network.disable", "{}"); // background tabs keep their watch
 
@@ -374,7 +374,7 @@ public partial class MainForm
             await Task.Delay(800);
             await Cdp(cw, "ServiceWorker.disable", "{}");
             rv.DevToolsProtocolEventReceived -= OnV; re.DevToolsProtocolEventReceived -= OnE;
-            DiagLog.Write($"blackbox {host} engine: {(versions.Count == 0 ? "no worker version reported" : string.Join(" ; ", versions.Distinct()))}" +
+            DiagLog.Write($"blackbox {DH(host)} engine: {(versions.Count == 0 ? "no worker version reported" : string.Join(" ; ", versions.Distinct()))}" +
                           (errors.Count > 0 ? " errors: " + string.Join(" | ", errors.Distinct().Take(5)) : ""));
 
             // the worker as a debug target
@@ -389,13 +389,13 @@ public partial class MainForm
                             (t.GetProperty("url").GetString() ?? "").Contains("://" + host, StringComparison.OrdinalIgnoreCase))
                         { targetId = t.GetProperty("targetId").GetString(); break; }
             }
-            if (targetId == null) { DiagLog.Write($"blackbox {host} worker: no worker target (not running)"); return; }
+            if (targetId == null) { DiagLog.Write($"blackbox {DH(host)} worker: no worker target (not running)"); return; }
             // Not attaching to it any more: on 2026-11-17 a test worker stuck "starting" crashed its
             // page's process (0xC0000005) every time the black box attached to it and evaluated code there,
             // and the owner's engine died 3 s after the same step. Its presence and type are enough.
-            DiagLog.Write($"blackbox {host} worker: target present (not attached)");
+            DiagLog.Write($"blackbox {DH(host)} worker: target present (not attached)");
         }
-        catch (Exception ex) { DiagLog.Write($"blackbox {host}: failed {ex.Message}"); }
+        catch (Exception ex) { DiagLog.Write($"blackbox {DH(host)}: failed {ex.Message}"); }
     }
 
     /// <summary>After the laptop wakes up, old connections are often dead: start with fresh ones.</summary>

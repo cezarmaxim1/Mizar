@@ -11,6 +11,7 @@ Rules, commands and traps are in `AGENTS.md`. Open problems are in `STATUS.md`.
 - **One shared `CoreWebView2Environment`** (`MainForm.envTask`) on `<data>\WebData`, so all tabs share one browser process.
   - If that process dies, `RecoverEngine` creates a new environment and gives every tab a new `WebView2` (`BrowserTab.ReplaceView`).
   - `engineGen` ignores the duplicate reports, one per tab, from the dead engine.
+- **Private windows (Ctrl+Shift+N)** are extra `MainForm`s (`IsPrivate`, `mainWindow`) sharing the main window's settings, bookmarks and environment. Their tabs use an InPrivate controller (`ProfileName = "mizar-private"`), so they share one in-memory profile that the engine drops when the last private tab closes. They write nothing: no history, session, zoom or favicons, and `diag.log` gets `private` instead of hosts (`DH`/`DiagHost`). Closing the main window closes them; links from other apps always go to the main window.
 - **Single instance per data folder** (`SingleInstance` in `AppServices.cs`): a mutex `Local\Mizar.Instance.<id>` plus a pipe `Mizar.Open.<id>`.
   - A second launch sends its URL, or `mizar-cmd:fixnet|netdiag`, and exits.
   - URLs that arrive before the session is ready wait in `pendingPipeUrls`.

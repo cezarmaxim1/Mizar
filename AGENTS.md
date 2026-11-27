@@ -56,6 +56,7 @@ For modules, data flow and design decisions, read `ARCHITECTURE.md`. For what's 
     | `--settingstest` | opens Settings as if the screen were 700 px tall, then at the real height; saves `<outfile>.settings-*.png`; Save/Cancel must stay visible |
     | `--exttest` / `--admarkers` | loads the unpacked extension in `MIZAR_EXT_DIR` (extensions on only in this test), reloads, samples YouTube ad markers for 30 s; `--admarkers` samples without it |
     | `--ytupdate` | builds the YouTube script now (`YouTubeBlock`: downloads uBO + lists), adds it, reloads, samples YouTube ad markers. Use a video URL |
+    | `--privatetest` | opens a private window, sets a cookie on httpbin.org: must be in the private profile only, not in history, and gone after closing and reopening a private window |
     | `--focustest` | switch tabs and back; reports the page's focused element. Can't reproduce the focus-ring bug: the test window never becomes the foreground window |
 
   - These need a local page served with `python -m http.server`:
