@@ -1527,7 +1527,9 @@ public partial class MainForm : Form
             // classifies every cross-site request in the browser process. On 2026-11-15 Gmail's
             // cross-site requests (gstatic.com) never reached the network stack while same-site ones
             // did (NetLog), so anything that gates cross-site requests is a suspect. See known issue 0.
-            EnableTrackingPrevention = false
+            EnableTrackingPrevention = false,
+            // --exttest only (self-test): extension support for the uBlock Origin feasibility test
+            AreBrowserExtensionsEnabled = IsSelfTest && startArgs.Contains("--exttest")
         };
     }
 
@@ -1751,6 +1753,38 @@ public partial class MainForm : Form
             Activate(first);
             await Task.Delay(1500);
             keys += $"focus: after switch back -> {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(probe))}\n";
+        }
+        if (startArgs.Contains("--exttest") || startArgs.Contains("--admarkers"))
+        {
+            // --exttest: load the unpacked extension in MIZAR_EXT_DIR, reload, then sample YouTube ad markers.
+            // --admarkers: the same sampling without an extension (baseline).
+            if (startArgs.Contains("--exttest"))
+            {
+                try
+                {
+                    var ext = await cw.Profile.AddBrowserExtensionAsync(Environment.GetEnvironmentVariable("MIZAR_EXT_DIR"));
+                    keys += $"ext: loaded id={ext.Id} name={ext.Name} enabled={ext.IsEnabled}\n";
+                }
+                catch (Exception ex) { keys += $"ext: load FAILED {ex.GetType().Name}: {ex.Message}\n"; }
+                try
+                {
+                    foreach (var x in await cw.Profile.GetBrowserExtensionsAsync())
+                        keys += $"ext: listed {x.Name} enabled={x.IsEnabled}\n";
+                }
+                catch (Exception ex) { keys += $"ext: list FAILED {ex.Message}\n"; }
+                await Task.Delay(5000); // let the extension load its filter lists
+                cw.Reload();
+                await Task.Delay(12000);
+            }
+            const string probe = "(() => { const q = s => document.querySelectorAll(s).length; " +
+                "return `adShowing=${q('.ad-showing,.ad-interrupting')} adSlots=${q('ytd-ad-slot-renderer,ytd-in-feed-ad-layout-renderer')} " +
+                "playerAds=${q('#player-ads > *')} promo=${q('ytd-banner-promo-renderer,ytd-statement-banner-renderer')} " +
+                "video=${q('video')} host=${location.host}`; })()";
+            for (int i = 0; i < 10; i++)
+            {
+                keys += $"ads t={i * 3}s: {System.Text.Json.JsonSerializer.Deserialize<string>(await cw.ExecuteScriptAsync(probe))}\n";
+                await Task.Delay(3000);
+            }
         }
         if (startArgs.Contains("--downloadtest"))
         {

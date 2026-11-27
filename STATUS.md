@@ -102,6 +102,10 @@ On 2026-11-16 17:19 (manual repair) and on 2026-11-17 08:52 (automatic heal), th
    - open `edge://serviceworker-internals` in a Mizar tab and note the `mail.google.com` entry's status and its log;
    - or run `Mizar.exe --netdiag <out.txt>`: three phases (as is, after a flush, after a worker reset).
 
+## uBlock Origin (MV2) feasibility
+
+- **2026-11-27: it loads and works in WebView2 157.** uBlock Origin 1.77.2 (`uBlock0_1.77.2.chromium.zip` from GitHub `gorhill/uBlock`, Manifest V2) loaded unpacked with `AreBrowserExtensionsEnabled` + `AddBrowserExtensionAsync`, enabled. YouTube video, isolated profile, not signed in: with it, 0 ad markers over 30 s and the video played; without it, a pre-roll ad (`ad-showing`, `#player-ads`) and a sponsored card. Not built into Mizar yet; the owner accepted the background-page RAM cost.
+
 ## Known bugs and loose ends
 
 - **Third-party cookie blocking stays OFF for the owner** (owner, 2026-11-26): with it on, Google signed them out almost daily. `diag.log` start lines show `3pcBlock=False`. The setting defaults to on for new installs.

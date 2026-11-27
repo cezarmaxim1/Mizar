@@ -54,6 +54,7 @@ For modules, data flow and design decisions, read `ARCHITECTURE.md`. For what's 
     | `--downloadtest` | clicks `#l` (a link with `download`); the file must land in `DownloadFolder` |
     | `--bardragtest` | needs 20+ bookmarks so the bar overflows; drags hidden bookmarks onto the bar and within the » list, through `BookmarkBar.MousePos`/`LeftDown` |
     | `--settingstest` | opens Settings as if the screen were 700 px tall, then at the real height; saves `<outfile>.settings-*.png`; Save/Cancel must stay visible |
+    | `--exttest` / `--admarkers` | loads the unpacked extension in `MIZAR_EXT_DIR` (extensions on only in this test), reloads, samples YouTube ad markers for 30 s; `--admarkers` samples without it |
     | `--focustest` | switch tabs and back; reports the page's focused element. Can't reproduce the focus-ring bug: the test window never becomes the foreground window |
 
   - These need a local page served with `python -m http.server`:
