@@ -1906,6 +1906,30 @@ public partial class MainForm : Form
                 await Task.Delay(3000);
             }
         }
+        if (startArgs.Contains("--pastetest"))
+        {
+            // a Print Screen-like bitmap on the clipboard, then Ctrl+V into the page (replaces the clipboard!)
+            // --pasteclip: paste whatever is on the clipboard now (a real screenshot), without replacing it
+            if (!startArgs.Contains("--pasteclip"))
+            using (var bmp = new Bitmap(320, 180))
+            {
+                using (var g = Graphics.FromImage(bmp)) g.Clear(Color.CornflowerBlue);
+                Clipboard.SetImage(bmp);
+            }
+            active!.View.Focus();
+            await cw.ExecuteScriptAsync("window.mzPaste = []; document.addEventListener('paste', e => mzPaste.push({ target: e.target.tagName, types: [...e.clipboardData.types], files: e.clipboardData.files.length, prevented: e.defaultPrevented }), true);" +
+                "document.addEventListener('paste', e => mzPaste.push({ afterPage: true, prevented: e.defaultPrevented }), false);" +
+                "(document.querySelector('rich-textarea [contenteditable=true], [contenteditable=true], textarea') || document.body).focus()");
+            await Task.Delay(500);
+            const string vDown = "{\"type\":\"rawKeyDown\",\"modifiers\":2,\"key\":\"v\",\"code\":\"KeyV\",\"windowsVirtualKeyCode\":86,\"commands\":[\"paste\"]}";
+            const string vUp = "{\"type\":\"keyUp\",\"modifiers\":2,\"key\":\"v\",\"code\":\"KeyV\",\"windowsVirtualKeyCode\":86}";
+            await cw.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", vDown);
+            await cw.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", vUp);
+            await Task.Delay(4000);
+            keys += "paste: formats=" + string.Join(",", Clipboard.GetDataObject()?.GetFormats() ?? Array.Empty<string>()) + "\n";
+            keys += "paste: page=" + await cw.ExecuteScriptAsync(
+                "JSON.stringify({log: window.pasteLog || null, events: window.mzPaste, active: document.activeElement?.tagName + '.' + document.activeElement?.className, imgs: [...document.querySelectorAll('img')].filter(i => /^(blob|data):/.test(i.src)).length})") + "\n";
+        }
         if (startArgs.Contains("--privatetest"))
         {
             // a cookie set in a private window: not in the main profile, gone once the window closes

@@ -13,6 +13,7 @@ Dates are when the feature was last verified.
 - **Window:** fix for the window that ignored every click after a display change, plus per-monitor DPI. 2026-11-16, 12/12 in `tests\two-monitors.ps1`.
 - **Self-update** from GitHub Releases. Releases 1.0.1, 1.0.2 and 1.0.3 are published.
 - **Google Drive bookmark sync** (`DriveSync.cs`).
+- **Pasting screenshots** (reported: Ctrl+V of a Print Screen into gemini.google.com "doesn't work"). 2026-11-28: no Mizar bug. `--pastetest`: the page gets the image as `image/png` (test page and Gemini). Signed-out Gemini ignores it; the owner, signed in, pasted a real Print Screen into Gemini in Mizar fine.
 - **Private window** (Ctrl+Shift+N, menu "Fereastră privată nouă"): InPrivate profile, "Privat" chip, nothing written to disk. 2026-11-27, `--privatetest`: cookie only in the private profile, gone after reopen, no history entry, no host in `diag.log`. Not checked by eye on the owner's screen yet.
 - **Gmail mitigations:** manual repair, automatic heal, black box, engine restart (see below).
 - **Not in any release yet:** commits after `v1.0.3` on `main`: the black box (`ffadc1d`) and the engine restart with the new reset (`3059911`). The owner's machine runs them from a local install.
